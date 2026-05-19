@@ -495,6 +495,9 @@ main {
   <button class="tab-btn" data-screen="blood">
     <span class="emoji">🩸</span>דם
   </button>
+  <button class="tab-btn" data-screen="knowledge">
+    <span class="emoji">📚</span>ידע
+  </button>
 </nav>
 
 <main>
@@ -521,6 +524,11 @@ main {
   <!-- BLOOD TESTS -->
   <section class="screen" id="screen-blood">
     <div id="bloodContent"></div>
+  </section>
+
+  <!-- KNOWLEDGE BASE -->
+  <section class="screen" id="screen-knowledge">
+    <div id="knowledgeContent"></div>
   </section>
 </main>
 
@@ -561,6 +569,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       dailyMenus: state.dailyMenus,
       workoutOverrides: state.workoutOverrides,
       bloodTests: state.bloodTests.slice(0, 30),
+      knowledgeBase: state.knowledgeBase,
     }));
   }
 
@@ -578,6 +587,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     dailyMenus: localCache.dailyMenus || {},    // { 'YYYY-MM-DD': { items, totals } }
     workoutOverrides: localCache.workoutOverrides || {}, // { 'ראשון': [exercises] }
     bloodTests: localCache.bloodTests || [],    // Blood test records
+    knowledgeBase: localCache.knowledgeBase || [], // Cross-session insights from past chats
   };
 
   // ============================================================
@@ -844,6 +854,11 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       const { data: blood } = await supa.from('blood_tests')
         .select('*').order('test_date', {ascending:false}).limit(30);
       state.bloodTests = blood || [];
+
+      // Knowledge base (cross-session insights from past chats)
+      const { data: kb } = await supa.from('knowledge_base')
+        .select('*').order('priority', {ascending:false});
+      state.knowledgeBase = kb || [];
 
       // Workout overrides come from user_profile.workout_overrides JSON column,
       // but we keep them in localStorage for now (no schema change required).
@@ -1544,6 +1559,101 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   }
 
   // ============================================================
+  // RENDER: KNOWLEDGE BASE
+  // ============================================================
+  const KNOWLEDGE_CATEGORIES = {
+    general:  '📌 כללי',
+    diet:     '🥗 תזונה',
+    workouts: '🏋️ אימונים',
+    health:   '🩺 בריאות',
+    medical:  '💊 רפואי',
+  };
+
+  function knowledgeForPersona(persona){
+    const map = {
+      dietitian: ['diet', 'health', 'general'],
+      trainer:   ['workouts', 'health', 'general'],
+      doctor:    ['health', 'medical', 'general'],
+      team:      ['diet', 'workouts', 'health', 'medical', 'general'],
+    };
+    const allowed = map[persona] || ['general'];
+    return (state.knowledgeBase || [])
+      .filter(k => k.is_active !== false)
+      .filter(k => allowed.includes(k.category || 'general'))
+      .sort((a,b) => (b.priority||5) - (a.priority||5))
+      .slice(0, 15);
+  }
+
+  function buildKnowledgeSection(persona){
+    const items = knowledgeForPersona(persona);
+    if (!items.length) return '';
+    return '\n\n📚 ידע נצבר מצ׳אטים קודמים (התחשב/י בזה):\n' +
+      items.map(k => `• [${k.source_name}] ${k.title}: ${k.summary}`).join('\n');
+  }
+
+  function renderKnowledge(){
+    const kb = state.knowledgeBase || [];
+    const filter = sessionStorage.getItem('hh_kb_filter') || 'all';
+    const showInactive = sessionStorage.getItem('hh_kb_show_inactive') === '1';
+
+    let entries = kb;
+    if (!showInactive) entries = entries.filter(e => e.is_active !== false);
+    if (filter !== 'all') entries = entries.filter(e => (e.category||'general') === filter);
+
+    let html = `<div class="card">
+      <h3 class="card-title"><span><span class="emoji">📚</span> בסיס ידע</span>
+        <button class="btn" style="width:auto;padding:8px 14px;margin:0" data-action="add-knowledge">+ הוסף</button>
+      </h3>
+      <div class="text-xs text-dim mb-2">תובנות משיחות קודמות שזורמות אוטומטי ל-AI personas ב-buildContextSnapshot</div>
+
+      <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+        <select id="kbFilter" style="flex:1">
+          <option value="all" ${filter==='all'?'selected':''}>הכל הקטגוריות</option>
+          ${Object.entries(KNOWLEDGE_CATEGORIES).map(([k,v]) => `<option value="${k}" ${filter===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+        <button class="btn secondary" style="width:auto;padding:8px 12px;margin:0;font-size:12px" data-action="toggle-kb-inactive">${showInactive?'הסתר מושבתים':'הצג מושבתים'}</button>
+      </div>
+    </div>`;
+
+    if (!entries.length){
+      html += `<div class="card"><div class="empty-state">
+        <span class="emoji">📖</span>
+        <div>${kb.length ? 'אין entries בקטגוריה הזאת' : 'עדיין אין ידע. הרץ את ה-SQL השני או לחץ "+ הוסף"'}</div>
+      </div></div>`;
+    } else {
+      entries.forEach(e => {
+        const stars = '⭐'.repeat(Math.min(Math.max(e.priority||5, 1), 10));
+        const catLabel = KNOWLEDGE_CATEGORIES[e.category] || (e.category || 'כללי');
+        const isInactive = e.is_active === false;
+        html += `<div class="day-card" style="margin-bottom:10px;${isInactive?'opacity:0.5;':''}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px">
+            <div style="flex:1">
+              <div style="font-weight:700;font-size:14px">${escapeHtml(e.title||'')}</div>
+              <div class="text-xs text-dim mt-2">${catLabel} · ${stars} · 📂 ${escapeHtml(e.source_name||'')}
+                ${e.source_url ? ` · <a href="${escapeHtml(e.source_url)}" target="_blank" style="color:var(--accent);text-decoration:none">🔗 מקור</a>` : ''}
+              </div>
+            </div>
+            <div style="display:flex;gap:4px">
+              <button class="icon-btn" style="width:30px;height:30px;font-size:13px" data-action="toggle-knowledge" data-kb-id="${e.id}" title="${isInactive?'הפעל':'השבת'}">${isInactive?'🌙':'✅'}</button>
+              <button class="icon-btn" style="width:30px;height:30px;font-size:13px" data-action="edit-knowledge" data-kb-id="${e.id}" title="ערוך">✏️</button>
+              <button class="icon-btn" style="width:30px;height:30px;font-size:13px" data-action="delete-knowledge" data-kb-id="${e.id}" title="מחק">🗑️</button>
+            </div>
+          </div>
+          <div class="text-sm" style="line-height:1.5;white-space:pre-wrap">${escapeHtml(e.summary||'')}</div>
+        </div>`;
+      });
+    }
+
+    $('#knowledgeContent').innerHTML = html;
+    // Wire up filter dropdown
+    const sel = document.getElementById('kbFilter');
+    if (sel) sel.addEventListener('change', () => {
+      sessionStorage.setItem('hh_kb_filter', sel.value);
+      renderKnowledge();
+    });
+  }
+
+  // ============================================================
   // RENDER: METRICS
   // ============================================================
   function renderMetrics(){
@@ -1686,6 +1796,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
   function buildDietitianPrompt(){
     const ctx = buildContextSnapshot();
+    const knowledgeSection = buildKnowledgeSection('dietitian');
     const bloodSection = ctx.blood_tests_recent.length
       ? `\n🩸 בדיקות דם אחרונות (התחשבי בהן בהמלצות):\n${ctx.blood_tests_recent.map(b => `- ${b.date}: ${b.analysis ? b.analysis.substring(0,400) : 'ממתינה לניתוח'}`).join('\n')}`
       : '';
@@ -1715,7 +1826,7 @@ ${ctx.latest_metrics ? `- תאריך: ${ctx.latest_metrics.date}
 ${ctx.pantry_in_stock.join(', ')}
 
 📅 7 ימים אחרונים (תפריט שנאכל / מתוכנן):
-${menuSection}${bloodSection}
+${menuSection}${bloodSection}${knowledgeSection}
 
 🎯 בבקשה תני לי הנחיה אישית הכוללת:
 1. **תמונת מצב** - איפה אני עומד מבחינה תזונתית, האם המעבר בקצב נכון
@@ -1729,6 +1840,7 @@ ${menuSection}${bloodSection}
 
   function buildTrainerPrompt(){
     const ctx = buildContextSnapshot();
+    const knowledgeSection = buildKnowledgeSection('trainer');
     const bloodSection = ctx.blood_tests_recent.length
       ? `\n🩸 בדיקות דם אחרונות (התחשב בהן בעומסים):\n${ctx.blood_tests_recent.map(b => `- ${b.date}: ${b.analysis ? b.analysis.substring(0,400) : 'ממתינה'}`).join('\n')}`
       : '';
@@ -1751,7 +1863,7 @@ ${workoutSection}
 📈 מדידות אחרונות:
 ${ctx.latest_metrics ? `- משקל: ${ctx.latest_metrics.weight} ק"ג
 - אחוז שומן: ${ctx.latest_metrics.body_fat_pct}%
-- מסת שריר: ${ctx.latest_metrics.muscle_mass} ק"ג` : '- אין מדידה'}${bloodSection}
+- מסת שריר: ${ctx.latest_metrics.muscle_mass} ק"ג` : '- אין מדידה'}${bloodSection}${knowledgeSection}
 
 🎯 בבקשה הנחיה לאימון הקרוב:
 1. **המלצה לאימון** - אילו תרגילים, סטים, חזרות
@@ -1765,6 +1877,7 @@ ${ctx.latest_metrics ? `- משקל: ${ctx.latest_metrics.weight} ק"ג
 
   function buildTeamPrompt(){
     const ctx = buildContextSnapshot();
+    const knowledgeSection = buildKnowledgeSection('team');
     const bloodSection = ctx.blood_tests_recent.length
       ? `\n\n🩸 בדיקות דם אחרונות:\n${ctx.blood_tests_recent.map(b => `${b.date}: ${b.analysis ? b.analysis.substring(0,300) : 'ממתינה'}`).join('\n')}`
       : '';
@@ -1785,7 +1898,7 @@ ${ctx.latest_metrics ? `${ctx.latest_metrics.date}: ${ctx.latest_metrics.weight}
 ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל' (${d.items.length} מאכלים)` : `${d.date}: טמפלייט`).join('\n')}
 
 🏋️ אימונים:
-${ctx.workouts_plan.map(w => `${w.day}: ${w.exercises.length} תרגילים${w.custom?' [מותאם]':''}`).join('\n')}${bloodSection}
+${ctx.workouts_plan.map(w => `${w.day}: ${w.exercises.length} תרגילים${w.custom?' [מותאם]':''}`).join('\n')}${bloodSection}${knowledgeSection}
 
 🎯 סקירה משותפת:
 
@@ -1826,6 +1939,7 @@ ${ctx.workouts_plan.map(w => `${w.day}: ${w.exercises.length} תרגילים${w.
 
   function buildDoctorPrompt(){
     const ctx = buildContextSnapshot();
+    const knowledgeSection = buildKnowledgeSection('doctor');
     const tests = ctx.blood_tests_recent;
     if (!tests.length){
       return 'אין בדיקות דם זמינות לניתוח.';
@@ -1857,7 +1971,7 @@ ${ctx.latest_metrics ? `- משקל: ${ctx.latest_metrics.weight} ק"ג, שומן
 🍽️ הקשר תזונתי (7 ימים אחרונים):
 ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל', ${d.protein}g חלבון` : `${d.date}: טמפלייט`).join('\n')}
 
-🩸 בדיקות הדם:${testsSection}
+🩸 בדיקות הדם:${testsSection}${knowledgeSection}
 
 🎯 בבקשה תני ניתוח מקיף הכולל:
 
@@ -2627,6 +2741,107 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
       renderCurrentScreen();
       return;
     }
+
+    // ==================== KNOWLEDGE BASE ====================
+    if (action === 'toggle-kb-inactive'){
+      const cur = sessionStorage.getItem('hh_kb_show_inactive') === '1';
+      sessionStorage.setItem('hh_kb_show_inactive', cur ? '0' : '1');
+      renderKnowledge();
+      return;
+    }
+    if (action === 'add-knowledge' || action === 'edit-knowledge'){
+      const id = data.kbId ? parseInt(data.kbId) : null;
+      const e = id ? (state.knowledgeBase.find(k => k.id === id) || {}) : {};
+      const html = `<div class="modal-header">
+        <h3 class="modal-title">${id ? '✏️ עריכת ידע' : '➕ הוסף ידע חדש'}</h3>
+        <button class="modal-close" data-action="close-modal">×</button>
+      </div>
+      <div class="text-xs text-dim mb-2">הידע יזרום אוטומטי ל-AI personas הרלבנטיים לפי הקטגוריה</div>
+      <div class="form-row"><label class="form-label">מקור (שם הצ׳אט/התייעצות)</label>
+        <input type="text" id="kbSource" value="${escapeHtml(e.source_name||'')}" placeholder="לדוגמה: דיאטת קיטו"></div>
+      <div class="form-row"><label class="form-label">כותרת</label>
+        <input type="text" id="kbTitle" value="${escapeHtml(e.title||'')}" placeholder="כותרת קצרה של התובנה"></div>
+      <div class="form-row"><label class="form-label">קטגוריה</label>
+        <select id="kbCategory">
+          ${Object.entries(KNOWLEDGE_CATEGORIES).map(([k,v]) => `<option value="${k}" ${(e.category||'general')===k?'selected':''}>${v}</option>`).join('')}
+        </select></div>
+      <div class="form-row"><label class="form-label">תקציר (זה מה שיזרום ל-AI)</label>
+        <textarea id="kbSummary" rows="6" placeholder="תיאור קצר התובנה...">${escapeHtml(e.summary||'')}</textarea></div>
+      <div class="form-row"><label class="form-label">עדיפות (1-10)</label>
+        <input type="number" id="kbPriority" value="${e.priority||5}" min="1" max="10"></div>
+      <div class="form-row"><label class="form-label">URL מקור (אופציונלי)</label>
+        <input type="text" id="kbUrl" value="${escapeHtml(e.source_url||'')}" placeholder="https://claude.ai/chat/..."></div>
+      <div class="btn-row mt-3">
+        <button class="btn" data-action="save-knowledge" data-kb-id="${id||''}">💾 שמור</button>
+        <button class="btn secondary" data-action="close-modal">ביטול</button>
+      </div>`;
+      showModal(html);
+      setTimeout(()=>$('#kbTitle')?.focus(), 100);
+      return;
+    }
+    if (action === 'save-knowledge'){
+      const id = data.kbId ? parseInt(data.kbId) : null;
+      const record = {
+        source_name: $('#kbSource').value.trim() || 'ידני',
+        title: $('#kbTitle').value.trim(),
+        category: $('#kbCategory').value,
+        summary: $('#kbSummary').value.trim(),
+        priority: parseInt($('#kbPriority').value) || 5,
+        source_url: $('#kbUrl').value.trim() || null,
+        is_active: true,
+      };
+      if (!record.title || !record.summary){ toast('כותרת + תקציר חובה'); return; }
+      if (supa){
+        const op = id
+          ? supa.from('knowledge_base').update({...record, updated_at: new Date().toISOString()}).eq('id', id)
+          : supa.from('knowledge_base').insert(record);
+        const { data: saved, error } = await op.select().single();
+        if (error){ toast('שגיאה: '+error.message); return; }
+        if (id){
+          const idx = state.knowledgeBase.findIndex(k => k.id === id);
+          if (idx >= 0) state.knowledgeBase[idx] = saved;
+        } else {
+          state.knowledgeBase.unshift(saved);
+        }
+      } else {
+        if (id){
+          const idx = state.knowledgeBase.findIndex(k => k.id === id);
+          if (idx >= 0) state.knowledgeBase[idx] = {...state.knowledgeBase[idx], ...record};
+        } else {
+          state.knowledgeBase.unshift({...record, id: Date.now()});
+        }
+      }
+      saveLocalCache();
+      toast(id ? '✅ עודכן' : '✅ נוסף');
+      closeModal();
+      renderCurrentScreen();
+      return;
+    }
+    if (action === 'toggle-knowledge'){
+      const id = parseInt(data.kbId);
+      const e = state.knowledgeBase.find(k => k.id === id);
+      if (!e) return;
+      e.is_active = e.is_active === false ? true : false;
+      saveLocalCache();
+      if (supa){
+        await supa.from('knowledge_base').update({is_active: e.is_active}).eq('id', id);
+      }
+      toast(e.is_active ? '✅ הידע הופעל' : '🌙 הידע הושבת');
+      renderKnowledge();
+      return;
+    }
+    if (action === 'delete-knowledge'){
+      const id = parseInt(data.kbId);
+      if (!confirm('למחוק את התובנה?')) return;
+      state.knowledgeBase = state.knowledgeBase.filter(k => k.id !== id);
+      saveLocalCache();
+      if (supa){
+        await supa.from('knowledge_base').delete().eq('id', id);
+      }
+      toast('🗑️ נמחק');
+      renderKnowledge();
+      return;
+    }
   }
 
   // ============================================================
@@ -2772,6 +2987,7 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
     else if (currentScreen === 'workouts') renderWorkouts();
     else if (currentScreen === 'metrics') renderMetrics();
     else if (currentScreen === 'blood') renderBlood();
+    else if (currentScreen === 'knowledge') renderKnowledge();
   }
 
   // ============================================================
