@@ -764,6 +764,87 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     }
   }
 
+  // ============================================================
+  // PDF OCR (Tesseract.js + PDF.js, 100% client-side)
+  // ============================================================
+  function loadScript(src){
+    return new Promise((resolve, reject) => {
+      if (document.querySelector(`script[data-cdn="${src}"]`)){ resolve(); return; }
+      const s = document.createElement('script');
+      s.src = src;
+      s.setAttribute('data-cdn', src);
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('Failed to load: '+src));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function ensurePdfJs(){
+    if (window.pdfjsLib) return window.pdfjsLib;
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    return window.pdfjsLib;
+  }
+
+  async function ensureTesseract(){
+    if (window.Tesseract) return window.Tesseract;
+    await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
+    return window.Tesseract;
+  }
+
+  /**
+   * Extract text from a PDF URL using PDF.js (digital text) with OCR fallback (Tesseract.js + Hebrew).
+   * Runs 100% in the browser - no backend required, no API costs.
+   * @param {string} pdfUrl - URL to the PDF
+   * @param {function} onProgress - Optional callback({phase, page, total, progress, status})
+   * @returns {Promise<{method: 'pdfjs'|'ocr', text: string, pages: number}>}
+   */
+  async function extractTextFromPDF(pdfUrl, onProgress){
+    const report = (info) => { try { onProgress && onProgress(info); } catch(_){} };
+    report({phase:'fetch', status:'מוריד PDF...'});
+    const pdfjs = await ensurePdfJs();
+    const resp = await fetch(pdfUrl);
+    if (!resp.ok) throw new Error('PDF fetch failed: '+resp.status);
+    const buf = await resp.arrayBuffer();
+    const pdf = await pdfjs.getDocument({data: buf}).promise;
+    const numPages = pdf.numPages;
+
+    // STEP 1: Try digital text extraction (works for non-scanned PDFs - instant, no OCR needed)
+    report({phase:'pdfjs', status:'מנסה לחלץ טקסט דיגיטלי...', total:numPages});
+    let digitalText = '';
+    for (let i = 1; i <= numPages; i++){
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items.map(it => it.str).join(' ');
+      if (pageText.trim()) digitalText += `\n=== עמוד ${i} ===\n${pageText}\n`;
+    }
+    if (digitalText.trim().length > 100){
+      report({phase:'done', method:'pdfjs', length:digitalText.length});
+      return { method:'pdfjs', text:digitalText, pages:numPages };
+    }
+
+    // STEP 2: Scanned PDF - render pages to canvas and run OCR
+    report({phase:'ocr-init', status:'טוען מנוע OCR (טעינה ראשונה ~30מב)...'});
+    const Tess = await ensureTesseract();
+    let ocrText = '';
+    for (let i = 1; i <= numPages; i++){
+      report({phase:'ocr', page:i, total:numPages, status:`מעבד עמוד ${i}/${numPages}...`});
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({scale: 2.0}); // higher scale = better OCR accuracy
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      await page.render({canvasContext: ctx, viewport}).promise;
+      const result = await Tess.recognize(canvas, 'heb+eng', {
+        logger: m => report({phase:'ocr', page:i, total:numPages, status:m.status, progress:m.progress})
+      });
+      ocrText += `\n=== עמוד ${i} ===\n${result.data.text}\n`;
+    }
+    report({phase:'done', method:'ocr', length:ocrText.length});
+    return { method:'ocr', text:ocrText, pages:numPages };
+  }
+
   function formatDate(d){
     if (!d) return '';
     const dt = typeof d === 'string' ? new Date(d) : d;
@@ -1538,12 +1619,16 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
         <h3 class="card-title"><span><span class="emoji">📋</span> היסטוריית בדיקות</span></h3>`;
       tests.forEach((t, i) => {
         const hasAnalysis = !!t.analysis;
+        const hasRawText = !!t.raw_text;
+        const methodLabel = t.raw_text_method === 'pdfjs' ? 'PDF דיגיטלי' : t.raw_text_method === 'ocr' ? 'OCR' : '';
         html += `<div class="day-card" style="margin-bottom:8px;border-right-color:#dc2626">
           <div class="day-name">
             <span>${formatDate(t.test_date)}</span>
-            <span style="display:flex;gap:6px">
-              ${hasAnalysis ? '<span class="badge" style="background:var(--accent)">✓ נותח</span>' : '<span class="badge" style="background:var(--accent-warn);color:#0f172a">⏳ ממתין</span>'}
+            <span style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+              ${hasRawText ? `<span class="badge" style="background:var(--accent-2)">📝 ${methodLabel} · ${t.raw_text.length.toLocaleString()} תווים</span>` : '<span class="badge" style="background:var(--accent-warn);color:#0f172a">📄 PDF בלבד</span>'}
+              ${hasAnalysis ? '<span class="badge" style="background:var(--accent)">✅ נותח</span>' : '<span class="badge" style="background:var(--accent-warn);color:#0f172a">⏳ ממתין</span>'}
               ${t.pdf_url ? `<a href="${escapeHtml(t.pdf_url)}" target="_blank" class="icon-btn" style="width:32px;height:32px;font-size:14px;text-decoration:none" title="פתח PDF">📄</a>` : ''}
+              ${t.pdf_url ? `<button class="icon-btn" style="width:32px;height:32px;font-size:14px" data-action="extract-blood-text" data-blood-id="${t.id}" title="חלץ טקסט שוב (OCR)">🔄</button>` : ''}
               <button class="icon-btn" style="width:32px;height:32px;font-size:14px" data-action="view-blood" data-blood-id="${t.id}" title="הצג">👁️</button>
               <button class="icon-btn" style="width:32px;height:32px;font-size:14px" data-action="delete-blood" data-blood-id="${t.id}" title="מחק">🗑️</button>
             </span>
@@ -1770,6 +1855,8 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       date: b.test_date,
       has_pdf: !!b.pdf_url,
       pdf_url: b.pdf_url,
+      raw_text: b.raw_text || null,
+      raw_text_method: b.raw_text_method || null,
       analysis: b.analysis ? b.analysis.substring(0, 1500) : null,
       notes: b.notes,
     }));
@@ -1946,7 +2033,13 @@ ${ctx.workouts_plan.map(w => `${w.day}: ${w.exercises.length} תרגילים${w.
     }
     const testsSection = tests.map((t, i) => {
       let s = `\n📄 בדיקה ${i+1} - ${t.date}:`;
-      if (t.pdf_url) s += `\n   קובץ PDF: ${t.pdf_url}`;
+      if (t.raw_text){
+        const method = t.raw_text_method === 'pdfjs' ? 'PDF דיגיטלי' : 'OCR אוטומטי';
+        s += `\n   טקסט מלא מה-PDF (חולץ דרך ${method}):\n${t.raw_text.substring(0, 6000)}`;
+        if (t.pdf_url) s += `\n   (מקור PDF: ${t.pdf_url})`;
+      } else if (t.pdf_url){
+        s += `\n   ⚠️ PDF: ${t.pdf_url}\n   הערה: טקסט לא חולץ אוטומטית. נתן תוכן להופיע רק אם יש לך גישה לתוכן ה-PDF.`;
+      }
       if (t.notes)   s += `\n   הערות מהמטופל: ${t.notes}`;
       if (t.analysis) s += `\n   ניתוח קודם: ${t.analysis.substring(0, 800)}`;
       return s;
@@ -1954,8 +2047,8 @@ ${ctx.workouts_plan.map(w => `${w.day}: ${w.exercises.length} תרגילים${w.
 
     return `את ד"ר אביגיל שמיר, רופאת משפחה ותיקה (20 שנות ניסיון) + מומחית קלינית לבדיקות מעבדה ובדיקות דם. דברי בעברית, ישירה אך אמפתית, רפואית-מקצועית אבל מובנת.
 
-🚨 הנחיה חשובה לClaude:
-המטופל מעלה PDF של בדיקת דם. **קרא את ה-PDF דרך ה-URL שמופיע למטה** ונתח את הערכים. אחרי הניתוח, החזר טקסט מפורט שיוטמע באפליקציה.
+🚨 הנחיה לClaude:
+המטופל העלה PDF של בדיקת דם. **הטקסט המלא מתוך ה-PDF כבר חולץ אוטומטית (דרך Tesseract.js OCR + PDF.js) ומופיע למטה.** נתח את הערכים מהטקסט הזה. אם הטקסט חסר (למשל OCR לא רצ), השתמש ב-URL. אחרי הניתוח החזר טקסט מפורט שיוטמע באפליקציה.
 
 👤 הנתונים האישיים של המטופל (מורן):
 - גיל: ${ctx.profile.age}
@@ -2702,9 +2795,59 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
       };
       const saved = await saveBloodTest(record);
       if (saved){
-        toast('✅ בדיקת הדם הועלתה! עכשיו לחץ "קבל ניתוח"');
+        toast('✅ הועלה! מתחיל חילוץ טקסט אוטומטי...', 2500);
         closeModal();
         renderCurrentScreen();
+        // Auto-extract text in background (PDF.js → OCR fallback)
+        try {
+          const result = await extractTextFromPDF(uploaded.url, (p) => {
+            if (p.phase === 'ocr' && p.page){
+              const pct = p.progress ? Math.round(p.progress*100) : 0;
+              toast(`🔍 OCR עמוד ${p.page}/${p.total} (${pct}%)`, 1200);
+            } else if (p.status){
+              toast(`📄 ${p.status}`, 1200);
+            }
+          });
+          await saveBloodTest({
+            ...saved,
+            raw_text: result.text,
+            raw_text_method: result.method,
+            raw_text_extracted_at: new Date().toISOString(),
+          });
+          toast(`✅ טקסט חולץ! ${result.text.length} תווים (${result.method === 'pdfjs' ? 'PDF דיגיטלי' : 'OCR'}). לחץ "קבל ניתוח"`, 4000);
+          renderCurrentScreen();
+        } catch (e) {
+          console.error('OCR failed:', e);
+          toast(`⚠️ חילוץ טקסט נכשל: ${e.message}. תוכל ללחוץ "🔄 חלץ שוב".`, 5000);
+        }
+      }
+      return;
+    }
+    if (action === 'extract-blood-text'){
+      const id = parseInt(data.bloodId);
+      const t = state.bloodTests.find(b => b.id === id);
+      if (!t || !t.pdf_url){ toast('אין PDF לחלץ'); return; }
+      toast('🔍 מתחיל חילוץ טקסט...', 2000);
+      try {
+        const result = await extractTextFromPDF(t.pdf_url, (p) => {
+          if (p.phase === 'ocr' && p.page){
+            const pct = p.progress ? Math.round(p.progress*100) : 0;
+            toast(`🔍 OCR עמוד ${p.page}/${p.total} (${pct}%)`, 1200);
+          } else if (p.status){
+            toast(`📄 ${p.status}`, 1200);
+          }
+        });
+        await saveBloodTest({
+          ...t,
+          raw_text: result.text,
+          raw_text_method: result.method,
+          raw_text_extracted_at: new Date().toISOString(),
+        });
+        toast(`✅ טקסט חולץ! ${result.text.length} תווים (${result.method === 'pdfjs' ? 'PDF דיגיטלי' : 'OCR'})`, 4000);
+        renderCurrentScreen();
+      } catch (e) {
+        console.error('OCR failed:', e);
+        toast(`⚠️ שגיאה: ${e.message}`, 5000);
       }
       return;
     }
@@ -2716,7 +2859,12 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
         <h3 class="modal-title">🩸 בדיקת דם - ${formatDate(t.test_date)}</h3>
         <button class="modal-close" data-action="close-modal">×</button>
       </div>
-      ${t.pdf_url ? `<a href="${escapeHtml(t.pdf_url)}" target="_blank" class="btn" style="text-decoration:none;background:#dc2626">📄 פתח PDF</a>` : ''}
+      ${t.pdf_url ? `<div class="btn-row mt-3">
+        <a href="${escapeHtml(t.pdf_url)}" target="_blank" class="btn" style="text-decoration:none;background:#dc2626;flex:1">📄 פתח PDF</a>
+        <button class="btn secondary" data-action="extract-blood-text" data-blood-id="${t.id}" style="flex:1">${t.raw_text ? '🔄 חלץ שוב' : '🔍 חלץ טקסט'}</button>
+      </div>` : ''}
+      ${t.raw_text ? `<details class="mt-3"><summary style="cursor:pointer;color:var(--accent-2);font-size:13px">📝 טקסט מחולץ (${t.raw_text.length.toLocaleString()} תווים, ${t.raw_text_method === 'pdfjs' ? 'PDF דיגיטלי' : 'OCR'})</summary>
+        <pre style="white-space:pre-wrap;font-size:11px;background:var(--bg);padding:10px;border-radius:8px;max-height:300px;overflow:auto;margin-top:8px">${escapeHtml(t.raw_text.substring(0, 3000))}${t.raw_text.length > 3000 ? '\n\n...(מקוצצ)' : ''}</pre></details>` : ''}
       ${t.notes ? `<div class="text-sm mt-3"><strong>הערות:</strong><br>${escapeHtml(t.notes)}</div>` : ''}
       ${t.analysis ? `<div class="mt-3"><strong class="text-sm">🩺 ניתוח ד"ר שמיר (${formatDate(t.analysis_date)}):</strong>
         <div style="white-space:pre-wrap;line-height:1.6;font-size:14px;margin-top:8px">${escapeHtml(t.analysis)}</div></div>`
