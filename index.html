@@ -1021,20 +1021,50 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     return true;
   }
 
-  // Fallback modal: show prompt in textarea with manual copy button
+  // Fallback modal: show prompt in textarea with manual copy + open Claude buttons (3-step flow)
   function showPromptFallback(promptText, persona){
-    const personaLabel = {dietitian:'👩‍⚕️ דיאטנית', trainer:'🏋️ מאמן', team:'👥 צוות'}[persona] || persona;
+    const personaLabel = {dietitian:'👩‍⚕️ ד"ר לבנת', trainer:'🏋️ אסף ברק', team:'👥 צוות', doctor:'🩺 ד"ר שמיר', product:'🤖 ניתוח מוצר'}[persona] || persona;
     const html = `<div class="modal-header">
-      <h3 class="modal-title">📋 העתק ידני - ${personaLabel}</h3>
+      <h3 class="modal-title">📋 הנחיה ל-${personaLabel}</h3>
       <button class="modal-close" data-action="close-modal">×</button>
     </div>
-    <div class="text-sm text-dim mb-2">העתקה אוטומטית נכשלה. סמן את כל הטקסט והעתק ידנית:</div>
-    <textarea id="fallbackPrompt" rows="14" readonly>${escapeHtml(promptText)}</textarea>
+    <div class="hint-box text-sm">
+      <strong>3 שלבים פשוטים:</strong><br>
+      1️⃣ לחץ <strong>"העתק"</strong> — הטקסט יישמר בזיכרון<br>
+      2️⃣ לחץ <strong>"פתח Claude.ai"</strong> — ייפתח טאב חדש<br>
+      3️⃣ ב-Claude.ai לחץ בתיבת הצ׳אט והקש <strong>Ctrl+V</strong> → שלח
+    </div>
+    <textarea id="fallbackPrompt" rows="10" readonly style="font-size:12px;font-family:monospace">${escapeHtml(promptText)}</textarea>
     <div class="btn-row mt-3">
-      <button class="btn" onclick="document.getElementById('fallbackPrompt').select();document.execCommand('copy')">📋 בחר הכל + העתק</button>
-      <button class="btn secondary" data-action="close-modal">סגור</button>
-    </div>`;
+      <button class="btn" id="btnCopyPrompt">📋 1. העתק</button>
+      <button class="btn" style="background:var(--accent-2)" id="btnOpenClaude">🔗 2. פתח Claude.ai</button>
+    </div>
+    <div class="text-xs text-dim mt-3">💡 אחרי שתקבל תשובה ב-Claude — חזור לכאן ולחץ "📥 הדבק תשובה"</div>`;
     showModal(html);
+    setTimeout(() => {
+      const copyBtn = document.getElementById('btnCopyPrompt');
+      const openBtn = document.getElementById('btnOpenClaude');
+      const ta = document.getElementById('fallbackPrompt');
+      if (copyBtn && ta){
+        copyBtn.addEventListener('click', async () => {
+          ta.removeAttribute('readonly');
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, 999999);
+          let ok = false;
+          try { await navigator.clipboard.writeText(ta.value); ok = true; }
+          catch(e){ try { ok = document.execCommand('copy'); } catch(_){} }
+          ta.setAttribute('readonly', '');
+          copyBtn.innerHTML = ok ? '✅ הועתק!' : '⚠️ Ctrl+C ידנית';
+          if (ok) setTimeout(()=>{copyBtn.innerHTML='📋 1. העתק';}, 2500);
+        });
+      }
+      if (openBtn){
+        openBtn.addEventListener('click', () => {
+          window.open('https://claude.ai/new', '_blank');
+        });
+      }
+    }, 50);
   }
 
   async function saveProfile(updates){
@@ -2222,19 +2252,14 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
                        : persona === 'doctor'    ? buildDoctorPrompt()
                        : persona === 'product'   ? buildProductPrompt()
                        : buildTeamPrompt();
-      // CRITICAL: open window SYNCHRONOUSLY before any await (popup blocker bypass)
-      const newWin = window.open('https://claude.ai/new', '_blank');
       sessionStorage.setItem('hh_prompt_'+persona, promptText);
       sessionStorage.setItem('hh_snapshot_'+persona, JSON.stringify(buildContextSnapshot()));
-      const ok = await copyToClipboard(promptText);
-      if (ok){
-        toast('✅ הועתק! הדבק ב-Claude.ai (Ctrl+V)', 3500);
-      } else {
-        showPromptFallback(promptText, persona);
-      }
-      if (!newWin){
-        setTimeout(()=>toast('⚠️ הדפדפן חסם פתיחת טאב - פתח claude.ai ידנית', 5000), 200);
-      }
+      // Try silent auto-copy in background (best effort, fail silently)
+      copyToClipboard(promptText).catch(()=>{});
+      // ALWAYS show modal so user sees the prompt + has clear 3-step flow
+      // (Old flow opened window.open + auto-copy, but Chrome silently fails clipboard.writeText
+      //  after focus moves to new tab, leaving Claude.ai empty and user confused.)
+      showPromptFallback(promptText, persona);
       return;
     }
 
