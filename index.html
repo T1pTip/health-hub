@@ -13,6 +13,7 @@
 <!-- Favicon + apple-touch-icon (SVG דרך data URI - אין קבצים נפרדים) -->
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="%230f172a" rx="6"/><text x="16" y="23" text-anchor="middle" font-size="20">💪</text></svg>'>
 <link rel="apple-touch-icon" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180"><rect width="180" height="180" fill="%230f172a"/><text x="90" y="125" text-anchor="middle" font-size="100">💪</text></svg>'>
+<link rel="manifest" href="manifest.webmanifest">
 <title>Health Hub - מורן</title>
 <style>
 /* ============================================================
@@ -862,6 +863,95 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     }
     report({phase:'done', method:'ocr', length:ocrText.length});
     return { method:'ocr', text:ocrText, pages:numPages };
+  }
+
+  /**
+   * Extract text from an IMAGE file (scale screenshot) via Tesseract.js OCR (heb+eng).
+   * No PDF.js needed - Tesseract reads the image directly. 100% client-side, no API cost.
+   * Same engine as the blood-test OCR flow.
+   */
+  async function extractTextFromImage(file, onProgress){
+    const report = (info) => { try { onProgress && onProgress(info); } catch(_){} };
+    report({status:'טוען מנוע OCR...'});
+    const Tess = await ensureTesseract();
+    report({status:'מנתח תמונה...'});
+    const result = await Tess.recognize(file, 'heb+eng', {
+      logger: m => report({status:m.status, progress:m.progress})
+    });
+    return (result && result.data && result.data.text) || '';
+  }
+
+  /**
+   * Parse smart-scale metrics from raw OCR text using keyword + numeric-range heuristics.
+   * Returns only the keys it could confidently detect. OCR of LCD/app screens is imperfect,
+   * so the user reviews & corrects the auto-filled fields before saving.
+   */
+  function parseScaleMetrics(rawText){
+    const result = {};
+    const text = (rawText || '').replace(/[٫،]/g, '.'); // normalize odd commas to dots
+    const lines = text.split(/\n+/).map(l => l.trim()).filter(Boolean);
+    function findNumberNear(keywords, opts){
+      const o = opts || {};
+      const min = o.min != null ? o.min : 0;
+      const max = o.max != null ? o.max : 99999;
+      for (const line of lines){
+        const low = line.toLowerCase();
+        if (keywords.some(k => low.includes(k.toLowerCase()))){
+          const nums = (line.match(/\d+\.?\d*/g) || []).map(parseFloat).filter(n => n >= min && n <= max);
+          if (nums.length) return o.integer ? Math.round(nums[0]) : nums[0];
+        }
+      }
+      return null;
+    }
+    result.weight       = findNumberNear(['משקל','weight'], {min:25, max:250});
+    result.body_fat_pct = findNumberNear(['שומן בגוף','אחוז שומן','body fat','fat','שומן'], {min:2, max:65});
+    result.muscle_mass  = findNumberNear(['מסת שריר','שריר','muscle'], {min:15, max:120});
+    result.water_pct    = findNumberNear(['מים','water','hydration'], {min:25, max:80});
+    result.visceral_fat = findNumberNear(['שומן בטני','בטני','visceral'], {min:1, max:59, integer:true});
+    // Weight fallback: largest plausible 2-3 digit decimal anywhere (scale weight is the big number)
+    if (result.weight == null){
+      const nums = (text.match(/\d{2,3}\.\d/g) || []).map(parseFloat).filter(n => n >= 40 && n <= 200);
+      if (nums.length) result.weight = nums.sort((a,b)=>b-a)[0];
+    }
+    Object.keys(result).forEach(k => { if (result[k] == null) delete result[k]; });
+    return result;
+  }
+
+  /**
+   * Full auto-OCR pipeline for the new-metric modal: image -> OCR -> parse -> fill fields.
+   */
+  async function runMetricOCR(file){
+    const statusEl = document.getElementById('ocrStatus');
+    const setStatus = (msg) => { if (statusEl){ statusEl.style.display='block'; statusEl.textContent = msg; } };
+    try {
+      setStatus('🔍 טוען מנוע OCR (פעם ראשונה ~30מב, סבלנות)...');
+      const text = await extractTextFromImage(file, (p) => {
+        if (p.status === 'recognizing text' && p.progress != null){
+          setStatus(`🔍 מזהה טקסט... ${Math.round(p.progress*100)}%`);
+        } else if (p.status){
+          setStatus(`🔍 ${p.status}...`);
+        }
+      });
+      const parsed = parseScaleMetrics(text);
+      const map = {weight:'#mWeight', body_fat_pct:'#mBf', muscle_mass:'#mMm', water_pct:'#mWater', visceral_fat:'#mVf'};
+      let filled = 0;
+      Object.keys(map).forEach(k => {
+        if (parsed[k] != null){ const el = $(map[k]); if (el){ el.value = parsed[k]; filled++; } }
+      });
+      const rawEl = document.getElementById('ocrRaw');
+      if (rawEl){ rawEl.value = text; const wrap = document.getElementById('ocrRawWrap'); if (wrap) wrap.style.display='block'; }
+      if (filled > 0){
+        setStatus(`✅ זוהו ${filled}/5 ערכים אוטומטית — בדוק/תקן ולחץ שמור`);
+        toast(`✅ ${filled} שדות מולאו מהתמונה`, 3000);
+      } else {
+        setStatus('⚠️ לא זוהו ערכים. בדוק את הטקסט שחולץ למטה ומלא ידנית, או נסה דרך Claude (למטה).');
+        toast('⚠️ OCR לא זיהה ערכים — נסה fallback דרך Claude', 4000);
+      }
+    } catch(e){
+      console.error('Metric OCR failed:', e);
+      setStatus('⚠️ חילוץ נכשל: ' + (e.message||e) + ' — מלא ידנית או נסה דרך Claude.');
+      toast('⚠️ OCR נכשל — fallback ל-Claude זמין למטה', 4000);
+    }
   }
 
   function formatDate(d){
@@ -2045,6 +2135,31 @@ ${ctx.workouts_plan.map(w => `${w.day}: ${w.exercises.length} תרגילים${w.
 ענו בעברית, ישיר, ממוקד.`;
   }
 
+  function buildScalePrompt(){
+    return `את/ה עוזר/ת שקורא/ת צילום ממסך של משקל חכם (Body Composition Scale). אעלה לך צילום של מסך המשקל.
+
+🎯 קרא/י את הערכים מהצילום והחזר/י JSON בלבד בתוך \`\`\`json בלוק:
+
+\`\`\`json
+{
+  "weight": 71.8,
+  "body_fat_pct": 18.5,
+  "muscle_mass": 55.2,
+  "water_pct": 58.0,
+  "visceral_fat": 8
+}
+\`\`\`
+
+הערות:
+- weight = משקל בק"ג (חובה)
+- body_fat_pct = אחוז שומן
+- muscle_mass = מסת שריר בק"ג
+- water_pct = אחוז מים
+- visceral_fat = שומן בטני (מספר שלם)
+- אם ערך לא מופיע בצילום — השמט אותו מה-JSON (אל תנחש)
+- החזר JSON תקין בלבד, ללא טקסט מסביב`;
+  }
+
   function buildProductPrompt(){
     const name = (document.getElementById('apName')?.value || '').trim();
     return `את ד"ר נועה לבנת, דיאטנית קלינית. אעלה לך עכשיו צילום של אריזת מוצר/חטיף/משקה${name ? ' (' + name + ')' : ''}.
@@ -2319,11 +2434,20 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
         <h3 class="modal-title">📊 מדידה חדשה</h3>
         <button class="modal-close" data-action="close-modal">×</button>
       </div>
-      <div class="text-xs text-dim mb-2">העלה צילום מסך מהמשקל החכם או הזן ידנית.</div>
+      <div class="hint-box text-xs">
+        📷 <strong>חילוץ אוטומטי מצילום:</strong> העלה צילום מסך מהמשקל החכם והמערכת תזהה ותמלא את הערכים אוטומטית (OCR מקומי בדפדפן, ללא העלאה, חינם).
+      </div>
       <div class="form-row">
-        <label class="form-label">📷 צילום (אופציונלי)</label>
+        <label class="form-label">📷 צילום מסך מהמשקל</label>
         <input type="file" id="metricPhoto" accept="image/*">
       </div>
+      <div id="ocrStatus" class="text-xs" style="display:none;background:var(--bg-card-2);padding:8px 10px;border-radius:8px;margin-bottom:10px;line-height:1.5"></div>
+      <div id="ocrRawWrap" style="display:none;margin-bottom:10px">
+        <details><summary style="cursor:pointer;color:var(--accent-2);font-size:12px">📝 טקסט שחולץ (לבדיקה)</summary>
+          <textarea id="ocrRaw" rows="4" readonly style="font-size:11px;font-family:monospace;margin-top:6px"></textarea>
+        </details>
+      </div>
+      <div class="text-xs text-dim mb-2">↓ בדוק/תקן את הערכים שזוהו (או מלא ידנית):</div>
       <div class="form-row"><label class="form-label">משקל (ק"ג) *</label>
         <input type="number" id="mWeight" step="0.01" required></div>
       <div class="form-row"><label class="form-label">אחוז שומן (%)</label>
@@ -2336,13 +2460,21 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
         <input type="number" id="mVf" step="1"></div>
       <div class="form-row"><label class="form-label">הערות</label>
         <textarea id="mNotes" rows="2"></textarea></div>
-      <div class="hint-box text-xs">
-        💡 <strong>טיפ:</strong> אחרי שמירה, לחץ "קבל הנחיה משותפת" בדשבורד כדי לקבל ניתוח על השינוי.
-      </div>
       <div class="btn-row mt-3">
         <button class="btn" data-action="save-metric">💾 שמור</button>
         <button class="btn secondary" data-action="close-modal">ביטול</button>
-      </div>`;
+      </div>
+      <details class="mt-3"><summary style="cursor:pointer;color:var(--text-dim);font-size:12px">🤖 לא זוהה אוטומטית? מילוי דרך Claude (fallback)</summary>
+        <div class="hint-box text-xs mt-2">
+          1️⃣ "העתק prompt" → "פתח Claude" · 2️⃣ ב-Claude הדבק + העלה צילום · 3️⃣ העתק JSON לכאן → "מלא שדות"
+        </div>
+        <div class="btn-row">
+          <button class="btn secondary" style="font-size:13px" data-action="copy-scale-prompt">📋 העתק prompt</button>
+          <button class="btn" style="font-size:13px;background:var(--accent-2)" data-action="open-claude">🔗 פתח Claude</button>
+        </div>
+        <textarea id="scaleJson" rows="3" placeholder='הדבק כאן JSON מ-Claude: {"weight":71.8,...}' style="font-size:12px;margin-top:8px"></textarea>
+        <button class="btn secondary" style="font-size:13px;margin-top:6px" data-action="fill-metric-from-json">⬇️ מלא שדות מ-JSON</button>
+      </details>`;
       showModal(html);
       return;
     }
@@ -2370,6 +2502,33 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
         closeModal();
         renderCurrentScreen();
       }
+      return;
+    }
+
+    if (action === 'copy-scale-prompt'){
+      const ok = await copyToClipboard(buildScalePrompt());
+      toast(ok ? '✅ הפרומפט הועתק! פתח Claude והדבק' : '⚠️ העתקה נכשלה - נסה שוב', 3500);
+      return;
+    }
+    if (action === 'open-claude'){
+      window.open('https://claude.ai/new', '_blank');
+      return;
+    }
+    if (action === 'fill-metric-from-json'){
+      const text = $('#scaleJson')?.value?.trim();
+      if (!text){ toast('הדבק קודם JSON מ-Claude'); return; }
+      let json;
+      try {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (!match) throw new Error('לא נמצא JSON');
+        json = JSON.parse(match[0]);
+      } catch(e){ toast('שגיאת JSON: '+e.message); return; }
+      if (json.weight != null) $('#mWeight').value = json.weight;
+      if (json.body_fat_pct != null) $('#mBf').value = json.body_fat_pct;
+      if (json.muscle_mass != null) $('#mMm').value = json.muscle_mass;
+      if (json.water_pct != null) $('#mWater').value = json.water_pct;
+      if (json.visceral_fat != null) $('#mVf').value = json.visceral_fat;
+      toast('✅ השדות מולאו - בדוק/תקן ולחץ שמור', 3500);
       return;
     }
 
@@ -3243,79 +3402,28 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
     if (e.target.closest('[data-action="save-settings"]')) saveSettings();
   });
 
+  // Auto-OCR when a scale screenshot is selected in the new-metric modal
+  document.addEventListener('change', (e) => {
+    if (e.target && e.target.id === 'metricPhoto'){
+      const file = e.target.files && e.target.files[0];
+      if (file && file.type && file.type.indexOf('image/') === 0){
+        runMetricOCR(file);
+      }
+    }
+  });
+
   // ============================================================
-  // PWA: Manifest + Service Worker (via Blob URLs)
+  // PWA: Service Worker registration (real same-origin file)
   // ============================================================
   function installPWA(){
-    const iconSvg192 = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" fill="#0f172a"/><text x="96" y="135" text-anchor="middle" font-size="120">💪</text></svg>`;
-    const iconSvg512 = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#0f172a"/><text x="256" y="360" text-anchor="middle" font-size="320">💪</text></svg>`;
-    const manifest = {
-      name: "Health Hub - מורן",
-      short_name: "Health Hub",
-      id: location.pathname,
-      scope: location.pathname,
-      start_url: location.pathname,
-      display: "standalone",
-      orientation: "portrait",
-      background_color: "#0f172a",
-      theme_color: "#0f172a",
-      lang: "he",
-      dir: "rtl",
-      description: "מעקב בריאות, תזונה ואימונים",
-      icons: [
-        {
-          src: "data:image/svg+xml;utf8," + encodeURIComponent(iconSvg192),
-          sizes: "192x192",
-          type: "image/svg+xml",
-          purpose: "any maskable"
-        },
-        {
-          src: "data:image/svg+xml;utf8," + encodeURIComponent(iconSvg512),
-          sizes: "512x512",
-          type: "image/svg+xml",
-          purpose: "any maskable"
-        }
-      ]
-    };
-    const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
-    const link = document.createElement('link');
-    link.rel = 'manifest';
-    link.href = URL.createObjectURL(blob);
-    document.head.appendChild(link);
-
-    // Minimal SW - cache-first for app shell
+    // Manifest + icons are real files linked statically in <head>.
+    // The service worker MUST be a real same-origin file: Chromium REJECTS blob: URL SW
+    // scripts (silent failure), which is why the install option never appeared. sw.js sits
+    // at the repo root => served at /health-hub/sw.js with scope /health-hub/.
     if ('serviceWorker' in navigator){
-      const swCode = `
-        const CACHE = 'hh-v1.1';
-        self.addEventListener('install', e => {
-          e.waitUntil(caches.open(CACHE).then(c => c.add('/').catch(()=>{})));
-          self.skipWaiting();
-        });
-        self.addEventListener('activate', e => {
-          e.waitUntil(caches.keys().then(keys =>
-            Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-          ));
-          self.clients.claim();
-        });
-        self.addEventListener('fetch', e => {
-          // Only cache GETs to same origin (avoid Supabase API)
-          if (e.request.method !== 'GET' || !e.request.url.startsWith(self.location.origin)) return;
-          e.respondWith(
-            caches.match(e.request).then(cached => {
-              const fetchPromise = fetch(e.request).then(resp => {
-                if (resp && resp.status === 200){
-                  const respClone = resp.clone();
-                  caches.open(CACHE).then(c => c.put(e.request, respClone));
-                }
-                return resp;
-              }).catch(() => cached);
-              return cached || fetchPromise;
-            })
-          );
-        });
-      `;
-      const swBlob = new Blob([swCode], { type: 'text/javascript' });
-      navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(()=>{});
+      navigator.serviceWorker.register('sw.js')
+        .then(reg => console.log('[HH] SW registered, scope:', reg.scope))
+        .catch(err => console.warn('[HH] SW registration failed:', err));
     }
   }
 
