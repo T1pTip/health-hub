@@ -1,11 +1,15 @@
 // Health Hub service worker.
 // Real same-origin file (NOT a blob: URL) so Chromium accepts it and the PWA becomes installable.
 // Strategy: stale-while-revalidate for same-origin GETs; skips cross-origin (Supabase API).
-const CACHE = 'hh-v1.3';
+const CACHE = 'hh-v1.4';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.add('./').catch(() => {})));
-  self.skipWaiting();
+  // NOTE: intentionally NOT calling skipWaiting() here.
+  // The new worker stays in 'waiting' so the page can show a
+  // "new version - refresh" banner (manual-aware update model).
+  // It skips waiting only when the user clicks refresh, via the
+  // SKIP_WAITING message handler below.
 });
 
 self.addEventListener('activate', (e) => {
@@ -15,6 +19,11 @@ self.addEventListener('activate', (e) => {
     )
   );
   self.clients.claim();
+});
+
+// Manual-aware update: the page posts this when the user clicks the refresh banner.
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('fetch', (e) => {

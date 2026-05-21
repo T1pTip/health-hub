@@ -3450,5 +3450,83 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
 })();
 </script>
 
+<script>
+/* ============================================================
+   Health Hub PWA controller
+   (1) Install button - captures beforeinstallprompt, shows a visible button.
+   (2) Update banner   - manual-aware: when a new service worker is waiting,
+       shows "new version - refresh"; the user clicks to apply
+       (posts SKIP_WAITING, then reloads on controllerchange).
+   Self-contained; does not touch the app IIFE.
+   ============================================================ */
+(function(){
+  function mkPill(id, bg){
+    var ex = document.getElementById(id);
+    if (ex) return ex;
+    var b = document.createElement('button');
+    b.id = id; b.type = 'button';
+    var s = b.style;
+    s.position = 'fixed'; s.left = '50%'; s.transform = 'translateX(-50%)';
+    s.zIndex = '99999'; s.padding = '12px 22px'; s.fontSize = '16px';
+    s.fontWeight = '700'; s.color = '#ffffff'; s.background = bg; s.border = 'none';
+    s.borderRadius = '999px'; s.boxShadow = '0 6px 20px rgba(0,0,0,0.28)';
+    s.cursor = 'pointer'; s.fontFamily = 'inherit'; s.display = 'none';
+    document.body.appendChild(b);
+    return b;
+  }
+
+  /* ---- (1) INSTALL ---- */
+  var deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', function(e){
+    e.preventDefault();
+    deferredPrompt = e;
+    var b = mkPill('hhInstallBtn', '#2563eb');
+    b.textContent = '\uD83D\uDCF2 \u05d4\u05ea\u05e7\u05df \u05d0\u05e4\u05dc\u05d9\u05e7\u05e6\u05d9\u05d4';
+    b.style.bottom = '18px';
+    b.onclick = function(){
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then(function(){ deferredPrompt = null; b.style.display = 'none'; });
+    };
+    b.style.display = 'block';
+  });
+  window.addEventListener('appinstalled', function(){
+    var b = document.getElementById('hhInstallBtn');
+    if (b) b.style.display = 'none';
+    deferredPrompt = null;
+  });
+
+  /* ---- (2) UPDATE (manual-aware, model 2) ---- */
+  if ('serviceWorker' in navigator){
+    var userAskedUpdate = false;
+    var reloaded = false;
+    function showUpdate(reg){
+      var b = mkPill('hhUpdateBtn', '#0d9488');
+      b.textContent = '\uD83D\uDD04 \u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u2013 \u05dc\u05d7\u05e5 \u05dc\u05e8\u05e2\u05e0\u05d5\u05df';
+      b.style.bottom = '76px';
+      b.onclick = function(){
+        if (reg.waiting){ userAskedUpdate = true; reg.waiting.postMessage({ type: 'SKIP_WAITING' }); }
+      };
+      b.style.display = 'block';
+    }
+    navigator.serviceWorker.register('sw.js').then(function(reg){
+      if (reg.waiting && navigator.serviceWorker.controller){ showUpdate(reg); }
+      reg.addEventListener('updatefound', function(){
+        var nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', function(){
+          if (nw.state === 'installed' && navigator.serviceWorker.controller){ showUpdate(reg); }
+        });
+      });
+    }).catch(function(e){ console.warn('SW registration failed:', e); });
+    navigator.serviceWorker.addEventListener('controllerchange', function(){
+      if (!userAskedUpdate || reloaded) return;
+      reloaded = true;
+      window.location.reload();
+    });
+  }
+})();
+</script>
+
 </body>
 </html>
