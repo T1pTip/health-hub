@@ -887,27 +887,56 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
    * so the user reviews & corrects the auto-filled fields before saving.
    */
   function parseScaleMetrics(rawText){
-    const result = {};
     const text = (rawText || '').replace(/[٫،]/g, '.'); // normalize odd commas to dots
-    const lines = text.split(/\n+/).map(l => l.trim()).filter(Boolean);
-    function findNumberNear(keywords, opts){
+    // Collapse internal whitespace per line but KEEP line structure: smart-scale apps lay
+    // values and labels on SEPARATE lines in a grid, so we must look across adjacent lines.
+    const lines = text.split(/\n+/).map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    // Extract numeric tokens from a line, each with its column-center position + trailing unit.
+    function numTokens(line){
+      const toks = [];
+      const re = /(\d{1,4}(?:\.\d{1,3})?)\s*(kg|%|kcal|keal)?/gi;
+      let m;
+      while ((m = re.exec(line)) !== null){
+        const val = parseFloat(m[1]);
+        if (isNaN(val)) continue;
+        toks.push({ val: val, center: m.index + m[0].length / 2, unit: (m[2] || '').toLowerCase() });
+      }
+      return toks;
+    }
+    // Find a metric value: locate a label line, then read the number at the matching column
+    // from the SAME line, the line ABOVE, or the line BELOW (in that order). Handles both
+    // grid layouts (value sits above its label) and classic inline layouts (value same line).
+    function valueFor(keywords, opts){
       const o = opts || {};
-      const min = o.min != null ? o.min : 0;
-      const max = o.max != null ? o.max : 99999;
-      for (const line of lines){
-        const low = line.toLowerCase();
-        if (keywords.some(k => low.includes(k.toLowerCase()))){
-          const nums = (line.match(/\d+\.?\d*/g) || []).map(parseFloat).filter(n => n >= min && n <= max);
-          if (nums.length) return o.integer ? Math.round(nums[0]) : nums[0];
+      const min = o.min != null ? o.min : -Infinity;
+      const max = o.max != null ? o.max : Infinity;
+      for (let i = 0; i < lines.length; i++){
+        const low = lines[i].toLowerCase();
+        let kpos = -1;
+        for (const k of keywords){
+          const idx = low.indexOf(k.toLowerCase());
+          if (idx >= 0){ kpos = idx + k.length / 2; break; }
+        }
+        if (kpos < 0) continue;
+        const cand = [lines[i]];
+        if (i - 1 >= 0) cand.push(lines[i - 1]);
+        if (i + 1 < lines.length) cand.push(lines[i + 1]);
+        for (const cl of cand){
+          let toks = numTokens(cl).filter(t => t.val >= min && t.val <= max);
+          if (o.unit){ const u = toks.filter(t => t.unit === o.unit); if (u.length) toks = u; }
+          if (!toks.length) continue;
+          toks.sort((a, b) => Math.abs(a.center - kpos) - Math.abs(b.center - kpos));
+          return o.integer ? Math.round(toks[0].val) : toks[0].val;
         }
       }
       return null;
     }
-    result.weight       = findNumberNear(['משקל','weight'], {min:25, max:250});
-    result.body_fat_pct = findNumberNear(['שומן בגוף','אחוז שומן','body fat','fat','שומן'], {min:2, max:65});
-    result.muscle_mass  = findNumberNear(['מסת שריר','שריר','muscle'], {min:15, max:120});
-    result.water_pct    = findNumberNear(['מים','water','hydration'], {min:25, max:80});
-    result.visceral_fat = findNumberNear(['שומן בטני','בטני','visceral'], {min:1, max:59, integer:true});
+    const result = {};
+    result.weight       = valueFor(['משקל','weight'], {min:25, max:250});
+    result.body_fat_pct = valueFor(['שומן בגוף','אחוז שומן','body fat','שומן'], {min:2, max:65, unit:'%'});
+    result.muscle_mass  = valueFor(['מסת שריר','muscle mass','שריר','muscle'], {min:15, max:120, unit:'kg'});
+    result.water_pct    = valueFor(['אחוז מים','body water','מים','water'], {min:25, max:80, unit:'%'});
+    result.visceral_fat = valueFor(['שומן בטני','בטני','visceral'], {min:1, max:59, integer:true});
     // Weight fallback: largest plausible 2-3 digit decimal anywhere (scale weight is the big number)
     if (result.weight == null){
       const nums = (text.match(/\d{2,3}\.\d/g) || []).map(parseFloat).filter(n => n >= 40 && n <= 200);
