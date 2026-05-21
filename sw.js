@@ -1,36 +1,38 @@
 // Health Hub service worker.
-// Real same-origin file (NOT a blob: URL) so Chromium accepts it and the PWA becomes installable.
-// Strategy:
-//   - HTML document / navigations: NETWORK-FIRST, so a new deploy reaches the user immediately
-//     when online (falls back to cache only when offline). This fixes the "stale app" problem
-//     where a freshly deployed change did not appear until a second reload.
+// Real same-origin file (NOT a blob: URL) so Chromium accepts it and the PWA stays installable.
+//
+// UPDATE MODEL: AUTO-UPDATE. A new service worker skips waiting and claims clients immediately,
+// so a fresh deploy applies on the NEXT app launch with no manual "refresh" step and no
+// "stuck waiting" worker. Combined with network-first HTML below, the app can never get stuck
+// on a stale cached version.
+//
+// FETCH STRATEGY:
+//   - HTML document / navigations: NETWORK-FIRST (freshest app when online, cache only offline).
 //   - Other same-origin GETs: stale-while-revalidate.
 //   - Cross-origin (Supabase API, CDNs): passed through untouched.
-const CACHE = 'hh-v1.5';
+const CACHE = 'hh-v1.6';
 
 self.addEventListener('install', (e) => {
+  self.skipWaiting(); // auto-activate the new worker -> no more "waiting"/stale app
   e.waitUntil(caches.open(CACHE).then((c) => c.add('./').catch(() => {})));
-  // No skipWaiting here: the page shows a "new version - refresh" banner and the user
-  // applies the update via the SKIP_WAITING message handler below.
 });
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
-    )
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-// Manual-aware update: the page posts this when the user clicks the refresh banner.
+// Kept for backward compatibility with the in-page "refresh" banner, if it ever fires.
 self.addEventListener('message', (e) => {
   if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
-  // Only handle same-origin GETs. Let cross-origin (Supabase, CDNs) pass through untouched.
+  // Only handle same-origin GETs. Cross-origin (Supabase, CDNs) passes through untouched.
   if (req.method !== 'GET' || !req.url.startsWith(self.location.origin)) return;
 
   const isDocument = req.mode === 'navigate' || req.destination === 'document';
