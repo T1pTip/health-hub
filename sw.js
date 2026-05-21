@@ -1,15 +1,17 @@
 // Health Hub service worker.
 // Real same-origin file (NOT a blob: URL) so Chromium accepts it and the PWA becomes installable.
-// Strategy: stale-while-revalidate for same-origin GETs; skips cross-origin (Supabase API).
-const CACHE = 'hh-v1.4';
+// Strategy:
+//   - HTML document / navigations: NETWORK-FIRST, so a new deploy reaches the user immediately
+//     when online (falls back to cache only when offline). This fixes the "stale app" problem
+//     where a freshly deployed change did not appear until a second reload.
+//   - Other same-origin GETs: stale-while-revalidate.
+//   - Cross-origin (Supabase API, CDNs): passed through untouched.
+const CACHE = 'hh-v1.5';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.add('./').catch(() => {})));
-  // NOTE: intentionally NOT calling skipWaiting() here.
-  // The new worker stays in 'waiting' so the page can show a
-  // "new version - refresh" banner (manual-aware update model).
-  // It skips waiting only when the user clicks refresh, via the
-  // SKIP_WAITING message handler below.
+  // No skipWaiting here: the page shows a "new version - refresh" banner and the user
+  // applies the update via the SKIP_WAITING message handler below.
 });
 
 self.addEventListener('activate', (e) => {
@@ -27,15 +29,35 @@ self.addEventListener('message', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
+  const req = e.request;
   // Only handle same-origin GETs. Let cross-origin (Supabase, CDNs) pass through untouched.
-  if (e.request.method !== 'GET' || !e.request.url.startsWith(self.location.origin)) return;
-  e.respondWith(
-    caches.match(e.request).then((cached) => {
-      const network = fetch(e.request)
+  if (req.method !== 'GET' || !req.url.startsWith(self.location.origin)) return;
+
+  const isDocument = req.mode === 'navigate' || req.destination === 'document';
+  if (isDocument){
+    // NETWORK-FIRST: always try the freshest HTML when online; fall back to cache offline.
+    e.respondWith(
+      fetch(req)
         .then((resp) => {
-          if (resp && resp.status === 200) {
+          if (resp && resp.status === 200){
             const clone = resp.clone();
-            caches.open(CACHE).then((c) => c.put(e.request, clone));
+            caches.open(CACHE).then((c) => c.put('./', clone));
+          }
+          return resp;
+        })
+        .catch(() => caches.match(req).then((m) => m || caches.match('./')))
+    );
+    return;
+  }
+
+  // STALE-WHILE-REVALIDATE for other same-origin assets.
+  e.respondWith(
+    caches.match(req).then((cached) => {
+      const network = fetch(req)
+        .then((resp) => {
+          if (resp && resp.status === 200){
+            const clone = resp.clone();
+            caches.open(CACHE).then((c) => c.put(req, clone));
           }
           return resp;
         })
