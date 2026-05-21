@@ -2246,6 +2246,32 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
   // ============================================================
   // EDIT MODALS (Menu day, Workout)
   // ============================================================
+  // Read the live edit-menu form fields back into the stashed items, so add/remove
+  // and save all preserve the user's in-progress edits (including free-text rows).
+  function readEditMenuForm(){
+    const s = JSON.parse(sessionStorage.getItem('hh_edit_menu') || '{}');
+    const items = (s.items || []).map((it, i) => {
+      const gEl = document.getElementById('emGrams' + i);
+      const mEl = document.getElementById('emMeal' + i);
+      const grams = (gEl && gEl.value !== '') ? parseFloat(gEl.value) : null;
+      const meal = (mEl && mEl.value) || it.meal || 'lunch';
+      const tEl = document.getElementById('emText' + i);
+      if (tEl){
+        return { food_id:null, food_name:tEl.value.trim(), grams:grams, meal:meal, freeText:true,
+                 cal:(it.cal != null ? it.cal : null), protein:(it.protein != null ? it.protein : null) };
+      }
+      const fEl = document.getElementById('emFood' + i);
+      const foodId = (fEl && fEl.value) ? parseInt(fEl.value) : null;
+      const food = foodId ? state.foods.find(f => f.id === foodId) : null;
+      return { food_id:foodId, food_name:(food ? food.name_he : ''), grams:grams, meal:meal, freeText:false };
+    });
+    s.items = items;
+    const nEl = document.getElementById('emNotes');
+    if (nEl) s.notes = nEl.value;
+    sessionStorage.setItem('hh_edit_menu', JSON.stringify(s));
+    return s;
+  }
+
   function renderEditMenuModal(){
     const s = JSON.parse(sessionStorage.getItem('hh_edit_menu') || '{}');
     const items = s.items || [];
@@ -2280,28 +2306,34 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
       html += `<div class="empty-state text-sm"><span class="emoji">🍽️</span>אין פריטים. לחץ "+ הוסף מאכל" להתחיל</div>`;
     } else {
       items.forEach((it, i) => {
-        html += `<div class="day-card" style="margin-bottom:8px;background:var(--bg-card-2)">
-          <div style="display:flex;gap:6px;align-items:center">
-            <select id="emFood${i}" style="flex:2;min-width:0">
+        const isFree = it.freeText === true;
+        const foodControl = isFree
+          ? `<input type="text" id="emText${i}" value="${escapeHtml(it.food_name||'')}" placeholder="תיאור המאכל (טקסט חופשי)" style="flex:2;min-width:0">`
+          : `<select id="emFood${i}" style="flex:2;min-width:0">
               <option value="">— בחר מאכל —</option>
               ${Object.entries(foodsByCategory).map(([cat, fs]) =>
                 `<optgroup label="${FOOD_CATEGORIES[cat]||cat}">${fs.map(f =>
                   `<option value="${f.id}" ${it.food_id===f.id||it.food_name===f.name_he?'selected':''}>${escapeHtml(f.name_he)} (${Math.round(f.cal_per_100g)}קל'/100g)</option>`
                 ).join('')}</optgroup>`
               ).join('')}
-            </select>
-            <input type="number" id="emGrams${i}" value="${it.grams||100}" min="1" max="2000" step="1" style="flex:1;min-width:0" title="גרמים">
+            </select>`;
+        html += `<div class="day-card" style="margin-bottom:8px;background:var(--bg-card-2)">
+          <div style="display:flex;gap:6px;align-items:center">
+            ${foodControl}
+            <input type="number" id="emGrams${i}" value="${it.grams!=null?it.grams:''}" min="0" max="2000" step="1" style="flex:1;min-width:0" placeholder="g" title="גרמים">
             <select id="emMeal${i}" style="flex:1;min-width:0">
               ${mealOptions.replace('selected', '').replace(`value="${it.meal||'lunch'}"`, `value="${it.meal||'lunch'}" selected`)}
             </select>
             <button class="icon-btn" style="width:32px;height:32px" data-action="edit-menu-remove-item" data-idx="${i}" title="הסר">×</button>
           </div>
+          ${isFree ? `<div class="text-xs text-dim" style="margin-top:5px">📝 טקסט מהטמפלייט — ערוך חופשי. לחישוב קלוריות החלף במאכל מהמאגר.</div>` : ''}
         </div>`;
       });
     }
 
     html += `<div class="btn-row mt-2">
       <button class="btn secondary" data-action="edit-menu-add-item">+ הוסף מאכל</button>
+      <button class="btn secondary" data-action="edit-menu-add-text">+ שורת טקסט</button>
     </div>
     <div class="form-row mt-3"><label class="form-label">הערות (אופציונלי)</label>
       <textarea id="emNotes" rows="2" placeholder="לדוגמה: היה רעב במיוחד אחרי האימון">${escapeHtml(s.notes||'')}</textarea></div>
@@ -2683,48 +2715,63 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
       const dateStr = data.date;
       const dayName = data.day;
       const existing = state.dailyMenus[dateStr];
-      const items = existing?.items ? [...existing.items] : [];
+      let items;
+      if (existing && existing.items && existing.items.length){
+        // A saved custom menu exists: load its items for editing.
+        items = existing.items.map(it => ({...it}));
+      } else {
+        // No saved menu yet: seed the editor from the DEFAULT_MENU template so the
+        // user edits the EXISTING plan instead of a blank form. Template meals are
+        // free-text strings, so they become editable free-text rows (freeText:true).
+        // The template cal/protein estimate is split across lunch/dinner so the
+        // calorie total is preserved (calcMenuTotals reads it.cal when present).
+        const tmpl = DEFAULT_MENU.days.find(d => d.day === dayName) || null;
+        items = [];
+        if (tmpl){
+          const halfCal  = tmpl.cal != null ? Math.round(tmpl.cal / 2) : null;
+          const halfProt = tmpl.protein != null ? Math.round(tmpl.protein / 2) : null;
+          if (tmpl.lunch)  items.push({food_id:null, food_name:tmpl.lunch,  grams:null, meal:'lunch',  freeText:true, cal:halfCal, protein:halfProt});
+          if (tmpl.dinner) items.push({food_id:null, food_name:tmpl.dinner, grams:null, meal:'dinner', freeText:true, cal:(tmpl.cal!=null?tmpl.cal-(halfCal||0):null), protein:(tmpl.protein!=null?tmpl.protein-(halfProt||0):null)});
+        }
+      }
+      const notes = (existing && existing.notes) ? existing.notes : '';
       // Stash in sessionStorage so add/remove buttons can mutate it
-      sessionStorage.setItem('hh_edit_menu', JSON.stringify({dateStr, dayName, items}));
+      sessionStorage.setItem('hh_edit_menu', JSON.stringify({dateStr, dayName, items, notes}));
       renderEditMenuModal();
       return;
     }
     if (action === 'edit-menu-add-item'){
-      const state2 = JSON.parse(sessionStorage.getItem('hh_edit_menu') || '{}');
-      state2.items = state2.items || [];
-      state2.items.push({food_id:null, food_name:'', grams:100, meal:'lunch'});
-      sessionStorage.setItem('hh_edit_menu', JSON.stringify(state2));
+      const s = readEditMenuForm();
+      s.items = s.items || [];
+      s.items.push({food_id:null, food_name:'', grams:100, meal:'lunch', freeText:false});
+      sessionStorage.setItem('hh_edit_menu', JSON.stringify(s));
+      renderEditMenuModal();
+      return;
+    }
+    if (action === 'edit-menu-add-text'){
+      const s = readEditMenuForm();
+      s.items = s.items || [];
+      s.items.push({food_id:null, food_name:'', grams:null, meal:'lunch', freeText:true});
+      sessionStorage.setItem('hh_edit_menu', JSON.stringify(s));
       renderEditMenuModal();
       return;
     }
     if (action === 'edit-menu-remove-item'){
       const idx = parseInt(data.idx);
-      const state2 = JSON.parse(sessionStorage.getItem('hh_edit_menu') || '{}');
-      state2.items.splice(idx, 1);
-      sessionStorage.setItem('hh_edit_menu', JSON.stringify(state2));
+      const s = readEditMenuForm();
+      s.items.splice(idx, 1);
+      sessionStorage.setItem('hh_edit_menu', JSON.stringify(s));
       renderEditMenuModal();
       return;
     }
     if (action === 'edit-menu-save'){
-      // Read all form fields back into items
-      const state2 = JSON.parse(sessionStorage.getItem('hh_edit_menu') || '{}');
-      state2.items = state2.items.map((_, i) => {
-        const foodSel = $(`#emFood${i}`);
-        const grams = parseFloat($(`#emGrams${i}`)?.value) || 0;
-        const meal = $(`#emMeal${i}`)?.value || 'lunch';
-        const foodId = foodSel?.value ? parseInt(foodSel.value) : null;
-        const food = foodId ? state.foods.find(f => f.id === foodId) : null;
-        return {
-          food_id: foodId,
-          food_name: food ? food.name_he : (foodSel?.options[foodSel.selectedIndex]?.text || ''),
-          grams,
-          meal,
-        };
-      }).filter(it => it.food_name && it.grams > 0);
-      const notes = $('#emNotes')?.value?.trim() || null;
-      const ok = await saveDailyMenu(state2.dateStr, state2.items, notes);
+      // Read current form fields (incl. free-text rows) back into items, then persist.
+      const s = readEditMenuForm();
+      s.items = (s.items || []).filter(it => it.freeText ? !!it.food_name : (it.food_name && it.grams > 0));
+      const notes = (s.notes != null && String(s.notes).trim()) ? String(s.notes).trim() : null;
+      const ok = await saveDailyMenu(s.dateStr, s.items, notes);
       if (ok){
-        toast('✅ נשמר! קלוריות חושבו אוטומטית');
+        toast('✅ נשמר! (פריטי טקסט חופשי לא נספרים בקלוריות)');
         sessionStorage.removeItem('hh_edit_menu');
         closeModal();
         renderCurrentScreen();
