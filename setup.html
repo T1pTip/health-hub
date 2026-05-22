@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="theme-color" content="#0f172a">
+<title>Health Hub Setup Wizard</title>
+<style>
+:root {
+  --bg: #0f172a;
+  --bg-card: #1e293b;
+  --bg-card-2: #334155;
+  --bg-elevated: #475569;
+  --accent: #10b981;
+  --accent-2: #06b6d4;
+  --accent-warn: #f59e0b;
+  --accent-danger: #ef4444;
+  --text: #e2e8f0;
+  --text-dim: #94a3b8;
+  --border: #334155;
+  --shadow: 0 10px 30px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 30px rgba(16, 185, 129, 0.15);
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  font-family: 'Heebo', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(16, 185, 129, 0.08) 0%, transparent 40%),
+    radial-gradient(circle at 80% 90%, rgba(6, 182, 212, 0.08) 0%, transparent 40%),
+    var(--bg);
+  background-attachment: fixed;
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-tap-highlight-color: transparent;
+  line-height: 1.5;
+}
+button {
+  font-family: inherit; cursor: pointer; border: none; background: none; color: inherit;
+}
+input, textarea, select {
+  font-family: inherit;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 15px;
+  width: 100%;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+input:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+}
+
+/* Layout */
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 80px;
+}
+.app-header {
+  text-align: center;
+  margin-bottom: 32px;
+  animation: fadeDown 0.5s ease-out;
+}
+.app-title {
+  font-size: 32px;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin: 0 0 6px;
+  letter-spacing: -0.5px;
+}
+.app-subtitle {
+  font-size: 15px;
+  color: var(--text-dim);
+}
+
+@keyframes fadeDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Stepper */
+.stepper {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 32px;
+  padding: 16px;
+  background: var(--bg-card);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  position: sticky;
+  top: 12px;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+}
+.step-dot {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
+.step-dot:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 14px;
+  right: -50%;
+  width: 100%;
+  height: 2px;
+  background: var(--border);
+  z-index: -1;
+}
+.step-dot.done:not(:last-child)::after { background: var(--accent); }
+.step-num {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--bg-card-2);
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-dim);
+  border: 2px solid var(--border);
+  transition: all 0.3s;
+}
+.step-dot.active .step-num {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.25);
+}
+.step-dot.done .step-num {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.step-dot.done .step-num::before {
+  content: '✓';
+}
+.step-dot.done .step-num span { display: none; }
+.step-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+}
+.step-dot.active .step-label, .step-dot.done .step-label { color: var(--text); }
+
+/* Card */
+.card {
+  background: var(--bg-card);
+  border-radius: 18px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  animation: fadeUp 0.4s ease-out;
+}
+.card-emoji {
+  font-size: 48px;
+  margin-bottom: 12px;
+  display: block;
+}
+.card-title {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  letter-spacing: -0.3px;
+}
+.card-sub {
+  font-size: 15px;
+  color: var(--text-dim);
+  margin: 0 0 24px;
+  line-height: 1.6;
+}
+
+/* Code block */
+.code-block {
+  background: #020617;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+  overflow-y: auto;
+  position: relative;
+  margin: 12px 0;
+  direction: ltr;
+  text-align: left;
+}
+.code-copy {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: var(--accent);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.code-copy:active { transform: scale(0.95); }
+.code-copy.copied { background: #059669; }
+
+/* Form */
+.form-row {
+  margin-bottom: 16px;
+}
+.form-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.form-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.form-hint a { color: var(--accent-2); }
+
+/* Buttons */
+.btn-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+.btn {
+  flex: 1;
+  background: var(--accent);
+  color: white;
+  border-radius: 12px;
+  padding: 14px 18px;
+  font-size: 15px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: transform 0.1s, background 0.2s, box-shadow 0.2s;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+.btn:active { transform: scale(0.98); }
+.btn:hover:not(:disabled) { box-shadow: 0 6px 18px rgba(16, 185, 129, 0.45); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+.btn.secondary {
+  background: var(--bg-card-2);
+  color: var(--text);
+  box-shadow: none;
+}
+.btn.secondary:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  box-shadow: none;
+}
+.btn.tiny {
+  padding: 8px 14px;
+  font-size: 13px;
+  flex: 0;
+  white-space: nowrap;
+}
+
+/* Checks list */
+.check-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+}
+.check-list li {
+  padding: 10px 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.check-list li:last-child { border-bottom: none; }
+.check-list .check-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+  line-height: 22px;
+}
+.check-list .pass .check-icon { color: var(--accent); }
+.check-list .fail .check-icon { color: var(--accent-danger); }
+.check-list .pending .check-icon {
+  color: var(--text-dim);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.check-list .check-name { font-weight: 600; }
+.check-list .check-detail {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.check-list .fail .check-detail { color: var(--accent-warn); }
+
+/* Status banner */
+.banner {
+  padding: 14px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.5;
+}
+.banner-icon { font-size: 22px; flex-shrink: 0; }
+.banner.info {
+  background: rgba(6, 182, 212, 0.1);
+  border: 1px solid var(--accent-2);
+  color: #a5f3fc;
+}
+.banner.warn {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid var(--accent-warn);
+  color: #fde68a;
+}
+.banner.error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--accent-danger);
+  color: #fecaca;
+}
+.banner.success {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid var(--accent);
+  color: #a7f3d0;
+}
+
+/* Action card */
+.action-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  margin-bottom: 14px;
+}
+.action-card h4 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.action-card .step-tag {
+  display: inline-block;
+  background: var(--bg-card-2);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.action-card ol {
+  padding-right: 20px;
+  margin: 8px 0 12px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.action-card ol code {
+  background: var(--bg-card-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  direction: ltr;
+  display: inline-block;
+}
+.action-card a.btn-link {
+  color: var(--accent-2);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px dashed var(--accent-2);
+}
+
+/* Final celebration */
+.celebrate {
+  text-align: center;
+  padding: 20px 0;
+}
+.celebrate .emoji {
+  font-size: 72px;
+  display: block;
+  margin-bottom: 16px;
+  animation: bounce 0.8s ease-out;
+}
+@keyframes bounce {
+  0% { transform: scale(0) rotate(-180deg); }
+  60% { transform: scale(1.1) rotate(10deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+.celebrate h2 {
+  font-size: 28px;
+  margin: 0 0 12px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: white;
+  padding: 12px 20px;
+  border-radius: 30px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 500;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  animation: toastIn 0.3s;
+  max-width: 90%;
+  text-align: center;
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 20px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (max-width: 480px) {
+  .app { padding: 16px 12px 80px; }
+  .card { padding: 20px; border-radius: 14px; }
+  .card-title { font-size: 20px; }
+  .step-label { display: none; }
+  .app-title { font-size: 24px; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header class="app-header">
+    <h1 class="app-title">🧙 Setup Wizard</h1>
+    <p class="app-subtitle">חיבור Health Hub ל-Supabase ב-5 דקות</p>
+  </header>
+
+  <div class="stepper" id="stepper"></div>
+  <div id="cardArea"></div>
+</div>
+
+<script>
+(function(){
+  // ============================================================
+  // STATE
+  // ============================================================
+  const STEPS = [
+    { id: 'sql',    label: 'טבלאות' },
+    { id: 'bucket', label: 'אחסון' },
+    { id: 'keys',   label: 'מפתחות' },
+    { id: 'verify', label: 'אימות' },
+    { id: 'done',   label: 'סיום' },
+  ];
+  let currentStep = 0;
+  const state = {
+    sqlRan: false,
+    bucketCreated: false,
+    url: '',
+    key: '',
+    checks: null,
+  };
+
+  const SQL_CONTENT = `-- Moran's Health Hub - Supabase Schema
+CREATE TABLE IF NOT EXISTS user_profile (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT DEFAULT 'מורן',
+  age NUMERIC DEFAULT 42.8,
+  height_cm NUMERIC DEFAULT 180,
+  start_weight NUMERIC DEFAULT 75.05,
+  target_weight_min NUMERIC DEFAULT 71.5,
+  target_weight_max NUMERIC DEFAULT 73.0,
+  target_bf_min NUMERIC DEFAULT 11,
+  target_bf_max NUMERIC DEFAULT 13,
+  diet_phase TEXT DEFAULT 'transitioning',
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS body_metrics (
+  id BIGSERIAL PRIMARY KEY,
+  measured_at TIMESTAMPTZ DEFAULT NOW(),
+  weight NUMERIC NOT NULL,
+  body_fat_pct NUMERIC,
+  muscle_mass NUMERIC,
+  water_pct NUMERIC,
+  visceral_fat NUMERIC,
+  bmi NUMERIC,
+  bmr NUMERIC,
+  notes TEXT,
+  photo_url TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_body_metrics_date ON body_metrics(measured_at DESC);
+
+CREATE TABLE IF NOT EXISTS pantry_items (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  category TEXT,
+  in_stock BOOLEAN DEFAULT TRUE,
+  notes TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS weekly_menus (
+  id BIGSERIAL PRIMARY KEY,
+  week_start DATE NOT NULL,
+  days JSONB NOT NULL,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS workout_log (
+  id BIGSERIAL PRIMARY KEY,
+  workout_date DATE NOT NULL,
+  day_name TEXT,
+  is_release BOOLEAN DEFAULT FALSE,
+  exercises JSONB,
+  rating INT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS daily_walks (
+  id BIGSERIAL PRIMARY KEY,
+  walk_date DATE NOT NULL UNIQUE,
+  km NUMERIC NOT NULL,
+  duration_min INT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS coach_messages (
+  id BIGSERIAL PRIMARY KEY,
+  persona TEXT NOT NULL,
+  prompt_sent TEXT,
+  response TEXT,
+  context_snapshot JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_coach_messages_date ON coach_messages(created_at DESC);
+
+INSERT INTO user_profile (name, age, height_cm, start_weight)
+SELECT 'מורן', 42.8, 180, 75.05
+WHERE NOT EXISTS (SELECT 1 FROM user_profile);`;
+
+  // ============================================================
+  // UTILS
+  // ============================================================
+  const $ = sel => document.querySelector(sel);
+
+  function toast(msg, ms=2400){
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(()=>t.remove(), ms);
+  }
+  async function copy(text, btnEl){
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch(e) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    if (btnEl){
+      const orig = btnEl.textContent;
+      btnEl.textContent = '✓ הועתק';
+      btnEl.classList.add('copied');
+      setTimeout(()=>{ btnEl.textContent = orig; btnEl.classList.remove('copied'); }, 1800);
+    }
+  }
+  function esc(str){
+    if (!str) return '';
+    return String(str).replace(/[&<>"']/g, m => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[m]));
+  }
+
+  // ============================================================
+  // RENDER
+  // ============================================================
+  function renderStepper(){
+    let html = '';
+    STEPS.forEach((s, i) => {
+      const cls = i < currentStep ? 'done' : i === currentStep ? 'active' : '';
+      html += `<div class="step-dot ${cls}">
+        <div class="step-num"><span>${i+1}</span></div>
+        <div class="step-label">${s.label}</div>
+      </div>`;
+    });
+    $('#stepper').innerHTML = html;
+  }
+
+  function render(){
+    renderStepper();
+    const renderers = [renderSQL, renderBucket, renderKeys, renderVerify, renderDone];
+    renderers[currentStep]();
+  }
+
+  // ---- STEP 1: SQL (with project creation banner) ----
+  function renderSQL(){
+    $('#cardArea').innerHTML = `
+      <div class="card">
+        <span class="card-emoji">🗄️</span>
+        <h2 class="card-title">יצירת פרויקט וטבלאות</h2>
+        <p class="card-sub">קודם יוצרים פרויקט Supabase חדש (חינם), ואז מריצים סקריפט SQL שיוצר 7 טבלאות.</p>
+
+        <div class="banner info" style="margin-bottom:16px">
+          <span class="banner-icon">🆕</span>
+          <div>
+            <strong>צעד 0 - יצירת פרויקט Supabase (אם אין לך עדיין):</strong>
+            <ol style="margin:6px 0 0; padding-right:20px; line-height:1.7">
+              <li>היכנס ל-<a href="https://supabase.com/dashboard" target="_blank" class="btn-link">supabase.com/dashboard</a></li>
+              <li>לחץ <strong>"New Project"</strong></li>
+              <li>שם: <code>health-hub</code>, סיסמה: שמור איפשהו, Region: <code>West EU (Ireland)</code></li>
+              <li>לחץ <strong>"Create new project"</strong> וחכה 1-2 דק׳ עד שהפרויקט מוכן</li>
+              <li>חזור הנה והמשך לצעדים למטה ↓</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="action-card">
+          <span class="step-tag">צעד 1 מתוך 2</span>
+          <h4>📋 העתק את ה-SQL</h4>
+          <div class="code-block" id="sqlBlock">
+            <button class="code-copy" data-copy-sql>📋 העתק</button>
+            <pre style="margin:30px 0 0;white-space:pre-wrap;">${esc(SQL_CONTENT)}</pre>
+          </div>
+        </div>
+
+        <div class="action-card">
+          <span class="step-tag">צעד 2 מתוך 2</span>
+          <h4>▶️ הרץ ב-Supabase SQL Editor</h4>
+          <ol>
+            <li>פתח את <a href="https://supabase.com/dashboard/project/_/sql/new" target="_blank" class="btn-link">SQL Editor של Supabase ↗</a></li>
+            <li>בחר את הפרויקט <code>health-hub</code> שיצרת</li>
+            <li>הדבק את ה-SQL (Ctrl+V)</li>
+            <li>לחץ <code>Run</code> או <code>Ctrl+Enter</code></li>
+            <li>תראה <code>Success. No rows returned</code> ✅</li>
+          </ol>
+        </div>
+
+        <div class="banner info">
+          <span class="banner-icon">💡</span>
+          <div>אם תראה שגיאה "relation already exists" - זה בסדר, רק רענן ותלך הלאה.</div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn" id="nextBtn">הרצתי ✓ המשך →</button>
+        </div>
+      </div>
+    `;
+
+    $('[data-copy-sql]').addEventListener('click', e => copy(SQL_CONTENT, e.target));
+    $('#nextBtn').addEventListener('click', () => {
+      state.sqlRan = true;
+      currentStep = 1; render();
+    });
+  }
+
+  // ---- STEP 2: Bucket ----
+  function renderBucket(){
+    $('#cardArea').innerHTML = `
+      <div class="card">
+        <span class="card-emoji">📦</span>
+        <h2 class="card-title">יצירת Bucket לתמונות</h2>
+        <p class="card-sub">לאכסון צילומי מסך מהמשקל החכם, צריך bucket בשם <code style="background:var(--bg-card-2);padding:2px 6px;border-radius:4px">scale-photos</code> שהוא Public.</p>
+
+        <div class="action-card">
+          <h4>📁 צור Storage Bucket</h4>
+          <ol>
+            <li>פתח את <a href="https://supabase.com/dashboard/project/_/storage/buckets" target="_blank" class="btn-link">Storage של Supabase ↗</a></li>
+            <li>לחץ <strong>"New bucket"</strong></li>
+            <li>שם הbucket: <code>scale-photos</code> (חשוב - בדיוק כך)</li>
+            <li>סמן ✅ <strong>"Public bucket"</strong></li>
+            <li>לחץ <strong>"Save"</strong></li>
+          </ol>
+        </div>
+
+        <div class="banner warn">
+          <span class="banner-icon">⚠️</span>
+          <div>
+            <strong>למה Public?</strong> כך התמונות מקבלות URL ציבורי שעובד גם בטלפון. הקבצים לא מאונדקסים בגוגל (Supabase לא מאפשר זאת לbuckets ברירת מחדל).
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn secondary tiny" id="backBtn">← חזור</button>
+          <button class="btn" id="nextBtn">יצרתי ✓ המשך →</button>
+        </div>
+      </div>
+    `;
+    $('#backBtn').addEventListener('click', () => { currentStep = 0; render(); });
+    $('#nextBtn').addEventListener('click', () => {
+      state.bucketCreated = true;
+      currentStep = 2; render();
+    });
+  }
+
+  // ---- STEP 3: Keys ----
+  function renderKeys(){
+    $('#cardArea').innerHTML = `
+      <div class="card">
+        <span class="card-emoji">🔑</span>
+        <h2 class="card-title">הזנת מפתחות גישה</h2>
+        <p class="card-sub">צריך 2 ערכים מ-Supabase: <strong>Project URL</strong> ו-<strong>anon public key</strong>.</p>
+
+        <div class="action-card">
+          <h4>📍 איפה למצוא?</h4>
+          <ol>
+            <li>פתח את <a href="https://supabase.com/dashboard/project/_/settings/api" target="_blank" class="btn-link">Settings → API של Supabase ↗</a></li>
+            <li>תחת <strong>"Project URL"</strong> - העתק את ה-URL (נראה כמו <code>https://abc123.supabase.co</code>)</li>
+            <li>תחת <strong>"Project API keys"</strong> - העתק את ה-<code>anon</code> <code>public</code> (ארוך, מתחיל ב-<code>eyJ</code>)</li>
+          </ol>
+          <div class="banner warn" style="margin-top:12px;padding:10px 12px;font-size:13px">
+            <span class="banner-icon">🛡️</span>
+            <div><strong>חשוב:</strong> רק <code>anon public</code> - לא <code>service_role</code> (זה סודי).</div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label">Project URL</label>
+          <input type="text" id="urlInput" placeholder="https://xxxxx.supabase.co" value="${esc(state.url)}" dir="ltr">
+        </div>
+
+        <div class="form-row">
+          <label class="form-label">anon public key</label>
+          <textarea id="keyInput" rows="4" placeholder="eyJhbGciOi..." dir="ltr">${esc(state.key)}</textarea>
+          <div class="form-hint">המפתח ארוך (200+ תווים). זה בסדר.</div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn secondary tiny" id="backBtn">← חזור</button>
+          <button class="btn" id="nextBtn">בדוק חיבור →</button>
+        </div>
+      </div>
+    `;
+    $('#backBtn').addEventListener('click', () => { currentStep = 1; render(); });
+    $('#nextBtn').addEventListener('click', () => {
+      const url = $('#urlInput').value.trim().replace(/\/$/, '');
+      const key = $('#keyInput').value.trim();
+      if (!url || !key){ toast('יש להזין URL ומפתח'); return; }
+      if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url)){
+        toast('ה-URL לא נראה תקין. דוגמה: https://abc.supabase.co');
+        return;
+      }
+      if (!key.startsWith('eyJ')){
+        toast('המפתח לא נראה תקין - אמור להתחיל ב-eyJ');
+        return;
+      }
+      state.url = url;
+      state.key = key;
+      currentStep = 3;
+      render();
+    });
+  }
+
+  // ---- STEP 4: Verify ----
+  function renderVerify(){
+    $('#cardArea').innerHTML = `
+      <div class="card">
+        <span class="card-emoji">🔍</span>
+        <h2 class="card-title">בודק חיבור...</h2>
+        <p class="card-sub">מאמת ש-URL+key תקינים, הטבלאות נוצרו, וה-bucket קיים.</p>
+
+        <ul class="check-list" id="checkList">
+          <li class="pending" data-key="url"><span class="check-icon">⏳</span><div><div class="check-name">חיבור ל-Supabase</div><div class="check-detail">בודק...</div></div></li>
+          <li class="pending" data-key="auth"><span class="check-icon">⏳</span><div><div class="check-name">אימות מפתח</div><div class="check-detail">ממתין</div></div></li>
+          <li class="pending" data-key="tables"><span class="check-icon">⏳</span><div><div class="check-name">טבלאות (user_profile, body_metrics, ...)</div><div class="check-detail">ממתין</div></div></li>
+          <li class="pending" data-key="bucket"><span class="check-icon">⏳</span><div><div class="check-name">Storage bucket "scale-photos"</div><div class="check-detail">ממתין</div></div></li>
+        </ul>
+
+        <div id="verifyResult"></div>
+
+        <div class="btn-row">
+          <button class="btn secondary tiny" id="backBtn">← חזור לעריכת מפתחות</button>
+          <button class="btn" id="nextBtn" disabled>שמור והפעל →</button>
+        </div>
+      </div>
+    `;
+    $('#backBtn').addEventListener('click', () => { currentStep = 2; render(); });
+    runChecks();
+  }
+
+  function setCheck(key, status, detail){
+    const li = document.querySelector(`[data-key="${key}"]`);
+    if (!li) return;
+    li.classList.remove('pending', 'pass', 'fail');
+    li.classList.add(status);
+    li.querySelector('.check-icon').textContent =
+      status === 'pass' ? '✅' : status === 'fail' ? '❌' : '⏳';
+    li.querySelector('.check-detail').textContent = detail;
+  }
+
+  async function runChecks(){
+    state.checks = { url:false, auth:false, tables:false, bucket:false };
+    const headers = {
+      'apikey': state.key,
+      'Authorization': `Bearer ${state.key}`,
+    };
+
+    // 1. URL reachable
+    try {
+      const r = await fetch(state.url + '/rest/v1/', { headers });
+      if (r.status === 401){
+        setCheck('url', 'pass', 'ה-URL חי (השרת מגיב)');
+        state.checks.url = true;
+        setCheck('auth', 'fail', 'המפתח לא תקין או שייך לפרויקט אחר');
+        finishChecks(); return;
+      } else if (r.ok || r.status === 200 || r.status === 404){
+        setCheck('url', 'pass', `URL חי (${r.status})`);
+        state.checks.url = true;
+      } else {
+        setCheck('url', 'fail', `קוד תגובה ${r.status}`);
+        finishChecks(); return;
+      }
+    } catch(e) {
+      setCheck('url', 'fail', 'לא ניתן להגיע ל-URL: ' + e.message);
+      finishChecks(); return;
+    }
+
+    // 2. Auth - try a public endpoint
+    try {
+      const r = await fetch(state.url + '/rest/v1/?apikey=' + encodeURIComponent(state.key), { headers });
+      if (r.ok || r.status === 200){
+        setCheck('auth', 'pass', 'המפתח תקין');
+        state.checks.auth = true;
+      } else if (r.status === 401){
+        setCheck('auth', 'fail', 'המפתח נדחה (401 Unauthorized)');
+        finishChecks(); return;
+      } else {
+        setCheck('auth', 'pass', `מפתח התקבל (${r.status})`);
+        state.checks.auth = true;
+      }
+    } catch(e) {
+      setCheck('auth', 'fail', 'שגיאה: ' + e.message);
+    }
+
+    // 3. Tables exist
+    const requiredTables = ['user_profile', 'body_metrics', 'pantry_items', 'weekly_menus', 'workout_log', 'daily_walks', 'coach_messages'];
+    const missing = [];
+    for (const t of requiredTables){
+      try {
+        const r = await fetch(`${state.url}/rest/v1/${t}?select=id&limit=1`, { headers });
+        if (!r.ok && r.status === 404){
+          missing.push(t);
+        } else if (r.status === 401){
+          missing.push(t + ' (auth)');
+        }
+      } catch(e) {
+        missing.push(t);
+      }
+    }
+    if (missing.length === 0){
+      setCheck('tables', 'pass', `כל 7 הטבלאות קיימות`);
+      state.checks.tables = true;
+    } else {
+      setCheck('tables', 'fail', `חסר: ${missing.join(', ')} - חזור לשלב 1 והרץ את ה-SQL`);
+    }
+
+    // 4. Bucket
+    try {
+      const r = await fetch(`${state.url}/storage/v1/object/list/scale-photos`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 1, offset: 0 }),
+      });
+      if (r.ok){
+        setCheck('bucket', 'pass', 'ה-bucket "scale-photos" קיים');
+        state.checks.bucket = true;
+      } else if (r.status === 404 || r.status === 400){
+        const errText = await r.text();
+        if (errText.includes('not found') || errText.includes('bucket')){
+          setCheck('bucket', 'fail', 'bucket לא קיים - חזור לשלב 2');
+        } else {
+          setCheck('bucket', 'pass', 'bucket נמצא (' + r.status + ')');
+          state.checks.bucket = true;
+        }
+      } else {
+        setCheck('bucket', 'fail', `קוד ${r.status} - ייתכן שה-bucket לא public`);
+      }
+    } catch(e) {
+      setCheck('bucket', 'fail', 'שגיאה: ' + e.message);
+    }
+
+    finishChecks();
+  }
+
+  function finishChecks(){
+    const all = Object.values(state.checks).every(v => v);
+    const resultDiv = $('#verifyResult');
+    const nextBtn = $('#nextBtn');
+    if (all){
+      resultDiv.innerHTML = `<div class="banner success" style="margin-top:16px"><span class="banner-icon">🎉</span><div><strong>הכל תקין!</strong> אפשר לעבור לשלב הבא ולשמור.</div></div>`;
+      nextBtn.disabled = false;
+      nextBtn.addEventListener('click', saveAndContinue);
+    } else {
+      resultDiv.innerHTML = `<div class="banner error" style="margin-top:16px"><span class="banner-icon">⚠️</span><div><strong>חלק מהבדיקות נכשלו.</strong> חזור לשלבים הקודמים ותקן את הבעיות, או נסה שוב.</div></div>
+      <div class="btn-row" style="margin-top:12px"><button class="btn secondary" id="retryBtn">🔄 נסה שוב</button></div>`;
+      $('#retryBtn').addEventListener('click', () => render());
+    }
+  }
+
+  function saveAndContinue(){
+    localStorage.setItem('hh_supabase_cfg', JSON.stringify({ url: state.url, key: state.key }));
+    currentStep = 4;
+    render();
+  }
+
+  // ---- STEP 5: Done ----
+  function renderDone(){
+    $('#cardArea').innerHTML = `
+      <div class="card">
+        <div class="celebrate">
+          <span class="emoji">🎉</span>
+          <h2>הכל מוכן!</h2>
+          <p style="color:var(--text-dim);max-width:400px;margin:0 auto 24px">
+            ה-Setup הסתיים בהצלחה. עכשיו אפשר לעבור לאפליקציה הראשית ולהתחיל להזין מדידות.
+          </p>
+
+          <div class="banner info" style="text-align:right">
+            <span class="banner-icon">💡</span>
+            <div>
+              <strong>הצעד הבא:</strong> מסך מדדים → "+ חדש" → הזן את המדידה הראשונה שלך → "📋 קבל סקירה משותפת" כדי לקבל הנחיה ראשונה מד"ר לבנת ואסף ברק.
+            </div>
+          </div>
+
+          <div class="btn-row" style="margin-top:24px">
+            <a href="./" class="btn" style="text-decoration:none">🩺 פתח את Health Hub →</a>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ============================================================
+  // INIT
+  // ============================================================
+  const existing = JSON.parse(localStorage.getItem('hh_supabase_cfg') || '{}');
+  if (existing.url && existing.key){
+    state.url = existing.url;
+    state.key = existing.key;
+  }
+  render();
+})();
+</script>
+
+</body>
+</html>

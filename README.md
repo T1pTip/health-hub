@@ -1,52 +1,97 @@
-# 🚀 Health Hub v1.1 - הוראות התקנה
+# 🩺 Health Hub - PWA אישית לבריאות
 
-## 📋 שלבי הקמה (פעם אחת)
+לוח בקרה אישי למעבר מקיטו לתזונה רגילה, מעקב מדדים, אימונים, ו-AI dietitian + trainer (BYOC).
 
-### שלב 1: Supabase
-1. Supabase Dashboard → SQL Editor → New Query → הדבק את `supabase_setup.sql` → Run
-2. Storage → New bucket → שם: `scale-photos` → סמן **Public** ✓
-3. Settings → API → העתק `Project URL` ו-`anon public` key
+## 🌐 גרסה חיה
 
-### שלב 2: פתיחת האפליקציה
-- **מקומית:** פתח `health-hub.html` ב-Chrome/Edge/Vivaldi
-- **בענן:** העלה ל-GitHub Pages תחת `t1ptip/health-hub`
-- בכניסה הראשונה: ⚙️ → הזן Supabase URL + Key + נתוני פרופיל → שמור
+**https://t1ptip.github.io/health-hub/**
 
-### שלב 3: שימוש יומיומי
-1. **בוקר:** מסך מדדים → "+ חדש" → צילום מהמשקל + הזנת נתונים
-2. **דשבורד:** "📋 קבל סקירה משותפת" → Claude.ai נפתח → Ctrl+V → קבל תשובה
-3. **חזרה לאפליקציה:** "📥 הדבק תשובה" → שמור
+---
 
-## 🆕 מה חדש ב-v1.1 (אחרי 8 תיקוני QA)
+## 🚀 התקנה ראשונית (5 דקות)
 
-### 🔴 באגים קריטיים שתוקנו
-- ✅ **Popup blocker fix:** Claude.ai נפתח מיד בלחיצה (לפני ה-async)
-- ✅ **Offline persistence:** הכל נשמר ב-localStorage גם בלי Supabase
-- ✅ **Per-persona prompts:** אפשר לפזר העתקות ולהדביק תשובות בכל סדר
+יש **2 דרכים** להגדיר את האפליקציה - בחר את מה שמתאים לך.
 
-### 🟡 שיפורי UX
-- ✅ **תוכנית להיום בדשבורד:** מסך פתיחה מציג את ארוחות היום + סוג היום (אימון/שחרור/רגיל) + 3 כפתורי action מהירים
-- ✅ **Walk modal:** רישום צעידה במודאל יפה (במקום `prompt()`)
-- ✅ **Workout logging:** מודאל מפורט לאימון - תרגילים, חזרות בפועל, דירוג, הערות
-- ✅ **Add pantry modal:** הוספת מוצר עם בחירת קטגוריה
-- ✅ **Clipboard fallback:** אם ההעתקה האוטומטית נכשלת - מודאל עם בחירה ידנית
+### דרך A - Setup Wizard מודרך (מומלץ ⭐)
 
-### 🟢 שיפורי תשתית
-- ✅ **Service Worker אמיתי:** cache-first לעבודה offline מלאה
-- ✅ **Pantry merge logic:** ברירת מחדל + שינויי משתמש מתמזגים נכון
-- ✅ **Pantry category fallback:** מוצרים עם קטגוריה לא מוכרת נכנסים ל"אחר"
-- ✅ **Coach messages offline:** נשמרים ב-localStorage גם בלי Supabase
+הכלי המודרך עושה את כל הצעדים בידיך עם בדיקת חיבור אוטומטית בסוף:
 
-## 🐛 ידוע - לעדכון הבא (v1.2)
+**https://t1ptip.github.io/health-hub/setup.html**
 
-- [ ] יצירת תפריט שבועי אוטומטי מ-pantry (כרגע דרך BYOC בלבד)
+ה-Wizard ידריך אותך ב-5 שלבים:
+1. **יצירת פרויקט Supabase + הרצת SQL** - הוראות מובנות + העתקת SQL ל-clipboard + פתיחת SQL Editor ישירות
+2. **יצירת bucket** `scale-photos` (Public)
+3. **הזנת מפתחות** - URL + anon key מ-Supabase
+4. **בדיקת חיבור אוטומטית** - בודק 4 דברים (URL/Auth/Tables/Bucket) ומציג ❌/✅ לכל אחד
+5. **סיום + redirect** לאפליקציה
+
+### דרך B - ידני
+
+1. **Supabase Dashboard** → New Project (אם אין) → SQL Editor → הדבק את `supabase_setup.sql` → Run
+2. **Storage** → New bucket → שם: `scale-photos` → Public ✓
+3. **Settings → API** → העתק `Project URL` ו-`anon public` key
+4. פתח את https://t1ptip.github.io/health-hub/ → ⚙️ → הדבק → שמור
+
+---
+
+## 📂 מבנה הריפו
+
+```
+health-hub/
+├── index.html              # האפליקציה הראשית (PWA, single-file)
+├── setup.html              # Setup Wizard מודרך (5 שלבים)
+├── supabase_setup.sql      # סקריפט יצירת טבלאות
+├── README.md               # קובץ זה
+├── LEARNINGS.md            # תיעוד באגים שתוקנו ב-QA
+└── .gitignore
+```
+
+---
+
+## 🆕 מה חדש ב-v1.1
+
+### 🔴 באגים קריטיים שתוקנו (8 סך הכל)
+- ✅ Popup blocker bypass (window.open סינכרוני)
+- ✅ Offline persistence מלא (localStorage cache)
+- ✅ Per-persona BYOC prompts (אפשר לפזר העתקות והדבקות)
+- ✅ Pantry merge logic (defaults + user changes)
+- ✅ Pantry "other" fallback (קטגוריות לא מוכרות)
+- ✅ Service Worker אמיתי (cache-first, same-origin)
+- ✅ Workout logging מלא (מודאל עם תרגילים)
+- ✅ Walk/pantry modals יפים (במקום `prompt()`)
+
+### 🟢 שיפורי UX
+- ✅ דשבורד עם "תוכנית להיום" + quick actions
+- ✅ TDEE דינמי לפי יום אימון/מנוחה
+- ✅ Setup Wizard מודרך עם 4 בדיקות אוטומטיות
+- ✅ Clipboard fallback modal
+
+---
+
+## 🐛 לעדכון הבא (v1.2)
+
+- [ ] יצירת תפריט שבועי אוטומטי מ-pantry
 - [ ] עריכה/מחיקה של מדידות
-- [ ] גרפים מתקדמים (recharts/chart.js)
-- [ ] OCR אוטומטי לצילום משקל (כרגע - הזנה ידנית)
-- [ ] חיבור ל-GYM PRO (משיכת היסטוריית אימונים)
-- [ ] ייצוא PDF של הנחיות לרופא
+- [ ] גרפים מתקדמים (Chart.js)
+- [ ] OCR לצילום משקל חכם
+- [ ] חיבור ל-GYM PRO v2
+- [ ] ייצוא PDF של הנחיות
 
-## 🔐 פרטיות
-- **0% פיצ׳רים שולחים נתונים לאיפשהו** (חוץ מ-Supabase שלך)
-- **0% עלויות API** (BYOC - העתק-הדבק ל-Claude.ai)
-- **100% offline-capable** אחרי טעינה ראשונה
+---
+
+## 🔐 פרטיות + עלויות
+
+- **0% עלויות API** - BYOC (Bring Your Own Claude) דרך Claude.ai החינמי/Pro/Max שלך
+- **0% Vendor lock-in** - הקוד מקור פתוח, ה-DB שלך, המפתחות שלך
+- **100% offline-capable** - אחרי טעינה ראשונה, השרת לא דרוש
+- כל הנתונים שלך נשמרים רק ב-Supabase project שלך (לא נשלחים לאף אחד אחר)
+
+---
+
+## 📜 רישיון
+
+לשימוש אישי. הקוד פתוח לצפייה ושיפורים אבל ללא אחריות.
+
+---
+
+*נבנה ב-2026-05-18 ב-Claude Desktop (Opus 4.7) דרך Filesystem MCP + GitHub MCP + gh CLI fallback.*
