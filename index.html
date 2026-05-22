@@ -560,7 +560,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.4.0';
+  const APP_VER = '2.4.1';
   try { var _vb = document.getElementById('appVer'); if (_vb) _vb.textContent = 'v' + APP_VER; } catch (_e) {}
   // Gemini vision proxy endpoint (the server holds the key). Empty = local OCR only.
   // Set after deploying the proxy, e.g. 'https://health-hub-vision-proxy.vercel.app/api/scan'.
@@ -3854,6 +3854,31 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
       window.location.reload();
     });
   }
+
+  // ============================================================
+  // AUTO-REFRESH ON RETURN
+  // The PWA stays in memory, so loadAllData ran only on a cold load. Without this,
+  // data synced while the app was backgrounded (e.g. new Samsung Health steps) looked
+  // stale until a manual reload. Re-pull + re-render when the app becomes visible again.
+  // ============================================================
+  let _lastDataLoad = Date.now();
+  let _refreshingOnReturn = false;
+  async function refreshOnReturn(){
+    if (_refreshingOnReturn) return;
+    if (!(cfg.url && cfg.key && supa)) return;
+    if (Date.now() - _lastDataLoad < 8000) return; // throttle rapid focus events
+    _refreshingOnReturn = true;
+    try {
+      await loadAllData();
+      _lastDataLoad = Date.now();
+      renderCurrentScreen();
+    } catch (e) { console.warn('[HH] refresh on return failed:', e); }
+    finally { _refreshingOnReturn = false; }
+  }
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState === 'visible') refreshOnReturn();
+  });
+  window.addEventListener('focus', refreshOnReturn);
 
   // ============================================================
   // INIT
