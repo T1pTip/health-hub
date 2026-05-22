@@ -560,7 +560,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.3.1';
+  const APP_VER = '2.4.0';
   try { var _vb = document.getElementById('appVer'); if (_vb) _vb.textContent = 'v' + APP_VER; } catch (_e) {}
   // Gemini vision proxy endpoint (the server holds the key). Empty = local OCR only.
   // Set after deploying the proxy, e.g. 'https://health-hub-vision-proxy.vercel.app/api/scan'.
@@ -596,6 +596,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       workoutOverrides: state.workoutOverrides,
       bloodTests: state.bloodTests.slice(0, 30),
       knowledgeBase: state.knowledgeBase,
+      healthDaily: state.healthDaily,
     }));
   }
 
@@ -614,6 +615,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     workoutOverrides: localCache.workoutOverrides || {}, // { 'ראשון': [exercises] }
     bloodTests: localCache.bloodTests || [],    // Blood test records
     knowledgeBase: localCache.knowledgeBase || [], // Cross-session insights from past chats
+    healthDaily: localCache.healthDaily || {}, // Samsung Health daily totals (steps/km/calories) keyed by date
   };
 
   // ============================================================
@@ -1354,6 +1356,14 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
         .select('*').order('priority', {ascending:false});
       state.knowledgeBase = kb || [];
 
+      // Samsung Health daily totals (steps/km/calories) - written by the Health Sync APK
+      const hCutoff = new Date(); hCutoff.setDate(hCutoff.getDate() - 30);
+      const { data: health } = await supa.from('health_daily')
+        .select('*').gte('day', hCutoff.toISOString().slice(0,10))
+        .order('day', {ascending:false});
+      state.healthDaily = {};
+      (health || []).forEach(r => { state.healthDaily[r.day] = r; });
+
       // Workout overrides come from user_profile.workout_overrides JSON column,
       // but we keep them in localStorage for now (no schema change required).
 
@@ -1611,6 +1621,42 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   // RENDER: DASHBOARD
   // ============================================================
+  // Flat activity card (Samsung Health) shown under the status-grid on the dashboard.
+  function buildActivityCard(){
+    const t = new Date().toISOString().slice(0,10);
+    const r = getHealthForDate(t) || getLatestHealth();
+    const consumed = getConsumedCaloriesForDate(t);
+    if (!r){
+      return '<div class="card"><h3 class="card-title"><span><span class="emoji">🔥</span> פעילות היום</span></h3>'
+        + '<div class="text-xs text-dim">אין נתוני Samsung Health עדיין — פתח את אפליקציית Health Sync וסנכרן.</div></div>';
+    }
+    const steps = (r.steps != null) ? r.steps : 0;
+    const km = (r.distance_km != null) ? r.distance_km : 0;
+    const burned = (r.calories != null) ? r.calories : 0;
+    const isToday = (r.day === t) || (!r.day);
+    const stale = isToday ? '' : ' (מציג ' + (r.day || '') + ')';
+    const balance = consumed - burned;
+    const balCls = balance > 0 ? 'up' : 'down';
+    const balSign = balance > 0 ? '+' : '';
+    function cell(label, value, unit){
+      return '<div style="flex:1;min-width:60px;text-align:center">'
+        + '<div class="status-label">' + label + '</div>'
+        + '<div style="font-size:18px;font-weight:700;color:var(--accent)">' + value
+        + (unit ? '<span class="status-unit">' + unit + '</span>' : '') + '</div></div>';
+    }
+    let h = '<div class="card">';
+    h += '<h3 class="card-title"><span><span class="emoji">🔥</span> פעילות היום</span>'
+      + '<span class="text-xs text-dim">Samsung Health' + stale + '</span></h3>';
+    h += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">';
+    h += cell('מרחק', km, ' ק"מ');
+    h += cell('צעדים', steps, '');
+    h += cell('נשרפו', burned, '');
+    h += cell('נצרכו', consumed, '');
+    h += '<div style="flex:1;min-width:60px;text-align:center"><div class="status-label">מאזן</div>'
+      + '<div class="status-trend ' + balCls + '" style="font-size:18px;font-weight:700">' + balSign + balance + '</div></div>';
+    h += '</div></div>';
+    return h;
+  }
   function renderDashboard(){
     const m = state.latestMetrics;
     const prev = state.metricsHistory[1];
@@ -1727,6 +1773,9 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       </div>
       <div class="text-sm text-dim mt-2">${targetCheck}</div>
     </div>`;
+
+    // פעילות יומית (Samsung Health) - כרטיס שטוח מתחת לתמונת מצב
+    html += buildActivityCard();
 
     // יעדים
     html += `<div class="card">
@@ -2233,6 +2282,39 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   }
 
   // ============================================================
+  // PHYSIOLOGICAL DATA (Samsung Health -> shared across dashboard + all AI personas)
+  // ============================================================
+  function getHealthForDate(dateStr){
+    return (state.healthDaily && state.healthDaily[dateStr]) ? state.healthDaily[dateStr] : null;
+  }
+  function getLatestHealth(){
+    const days = state.healthDaily ? Object.keys(state.healthDaily).sort() : [];
+    if (!days.length) return null;
+    const last = days[days.length - 1];
+    return Object.assign({ day: last }, state.healthDaily[last]);
+  }
+  // Consumed calories for a date = that date's menu total (custom) or template estimate.
+  function getConsumedCaloriesForDate(dateStr){
+    const menu = getMenuForDate(dateStr);
+    if (menu.custom) return menu.total_calories || 0;
+    if (menu.template) return menu.template.cal || 0;
+    return 0;
+  }
+  // Activity section injected into every AI persona prompt (shared physiological context).
+  function buildActivitySection(){
+    const days = state.healthDaily ? Object.keys(state.healthDaily).sort().slice(-7) : [];
+    if (!days.length) return '';
+    const lines = days.map(d => {
+      const r = state.healthDaily[d];
+      const steps = (r.steps != null) ? r.steps : 0;
+      const km = (r.distance_km != null) ? r.distance_km : 0;
+      const cal = (r.calories != null) ? r.calories : 0;
+      return '- ' + d + ': ' + steps + ' צעדים, ' + km + ' ק"מ, ' + cal + ' קלוריות נשרפו';
+    });
+    return '\n\n🏃 פעילות גופנית (Samsung Health, 7 ימים אחרונים, נתון פיזיולוגי משותף):\n' + lines.join('\n');
+  }
+
+  // ============================================================
   // BYOC: PROMPT BUILDERS
   // ============================================================
   function buildContextSnapshot(){
@@ -2321,12 +2403,22 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       workouts_plan: workouts,
       blood_tests_recent: recentBlood,
       walking: '9-14 ק"מ ביום',
+      activity_today: (function(){
+        const t = new Date().toISOString().slice(0,10);
+        const r = getHealthForDate(t) || getLatestHealth();
+        if (!r) return null;
+        return { date: r.day || t, steps: r.steps, distance_km: r.distance_km, calories_burned: r.calories, calories_consumed: getConsumedCaloriesForDate(t) };
+      })(),
+      activity_7d: (function(){
+        const days = state.healthDaily ? Object.keys(state.healthDaily).sort().slice(-7) : [];
+        return days.map(d => { const r = state.healthDaily[d]; return { date: d, steps: r.steps, distance_km: r.distance_km, calories_burned: r.calories }; });
+      })(),
     };
   }
 
   function buildDietitianPrompt(){
     const ctx = buildContextSnapshot();
-    const knowledgeSection = buildKnowledgeSection('dietitian');
+    const knowledgeSection = buildKnowledgeSection('dietitian') + buildActivitySection();
     const bloodSection = ctx.blood_tests_recent.length
       ? `\n🩸 בדיקות דם אחרונות (התחשבי בהן בהמלצות):\n${ctx.blood_tests_recent.map(b => `- ${b.date}: ${b.analysis ? b.analysis.substring(0,400) : 'ממתינה לניתוח'}`).join('\n')}`
       : '';
@@ -2370,7 +2462,7 @@ ${menuSection}${bloodSection}${knowledgeSection}
 
   function buildTrainerPrompt(){
     const ctx = buildContextSnapshot();
-    const knowledgeSection = buildKnowledgeSection('trainer');
+    const knowledgeSection = buildKnowledgeSection('trainer') + buildActivitySection();
     const bloodSection = ctx.blood_tests_recent.length
       ? `\n🩸 בדיקות דם אחרונות (התחשב בהן בעומסים):\n${ctx.blood_tests_recent.map(b => `- ${b.date}: ${b.analysis ? b.analysis.substring(0,400) : 'ממתינה'}`).join('\n')}`
       : '';
@@ -2407,7 +2499,7 @@ ${ctx.latest_metrics ? `- משקל: ${ctx.latest_metrics.weight} ק"ג
 
   function buildTeamPrompt(){
     const ctx = buildContextSnapshot();
-    const knowledgeSection = buildKnowledgeSection('team');
+    const knowledgeSection = buildKnowledgeSection('team') + buildActivitySection();
     const bloodSection = ctx.blood_tests_recent.length
       ? `\n\n🩸 בדיקות דם אחרונות:\n${ctx.blood_tests_recent.map(b => `${b.date}: ${b.analysis ? b.analysis.substring(0,300) : 'ממתינה'}`).join('\n')}`
       : '';
@@ -2494,7 +2586,7 @@ ${ctx.workouts_plan.map(w => `${w.day}: ${w.exercises.length} תרגילים${w.
 
   function buildDoctorPrompt(){
     const ctx = buildContextSnapshot();
-    const knowledgeSection = buildKnowledgeSection('doctor');
+    const knowledgeSection = buildKnowledgeSection('doctor') + buildActivitySection();
     const tests = ctx.blood_tests_recent;
     if (!tests.length){
       return 'אין בדיקות דם זמינות לניתוח.';
