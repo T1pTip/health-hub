@@ -7,7 +7,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.0.0';
+  const APP_VER = '2.2.0';
 
   let supa = null;
   let cfg = JSON.parse(localStorage.getItem(LS_KEY_CFG) || '{}');
@@ -19,6 +19,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       profile: state.profile, pantry: state.pantry,
       coachMessages: state.coachMessages.slice(0,20),
       latestMetrics: state.latestMetrics,
+      latestActivity: state.latestActivity,
       metricsHistory: state.metricsHistory.slice(0,30),
       foods: state.foods, dailyMenus: state.dailyMenus,
       workoutOverrides: state.workoutOverrides,
@@ -30,6 +31,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     profile: localCache.profile || { name:'מורן', age:42.8, height_cm:180, start_weight:75.05,
       target_weight_min:71.5, target_weight_max:73, target_bf_min:11, target_bf_max:13, diet_phase:'transitioning' },
     latestMetrics: localCache.latestMetrics || null,
+    latestActivity: localCache.latestActivity || null,
     metricsHistory: localCache.metricsHistory || [],
     pantry: localCache.pantry || [],
     currentMenu: null, workouts: [],
@@ -133,6 +135,8 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       if(profile) state.profile = {...state.profile, ...profile};
       const { data: metrics } = await supa.from('body_metrics').select('*').order('measured_at',{ascending:false}).limit(30);
       if(metrics?.length){ state.metricsHistory=metrics; state.latestMetrics=metrics[0]; }
+      const { data: activity } = await supa.from('health_daily').select('*').order('day',{ascending:false}).limit(1);
+      state.latestActivity = activity?.length ? activity[0] : null;
       const { data: pantry } = await supa.from('pantry_items').select('*').order('name');
       state.pantry = pantry||[];
       const { data: msgs } = await supa.from('coach_messages').select('*').order('created_at',{ascending:false}).limit(50);
@@ -151,7 +155,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
   async function saveMetric(d){
     if(!supa){ toast('Supabase לא מחובר'); return false; }
-    const en = {...d, bmi:calcBMI(d.weight,state.profile.height_cm), bmr:calcBMR(d.weight,state.profile.height_cm,state.profile.age)};
+    const en = {...d, source:'manual', bmi:calcBMI(d.weight,state.profile.height_cm), bmr:calcBMR(d.weight,state.profile.height_cm,state.profile.age)};
     const { error } = await supa.from('body_metrics').insert(en);
     if(error){ console.error(error); toast('שגיאה'); return false; }
     await loadAllData(); return true;
@@ -272,7 +276,11 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     html += `<div class="status-grid"><div class="status-tile"><div class="status-label">משקל</div><div class="status-value">${m?m.weight:'-'}<span class="status-unit">ק"ג</span></div><div class="status-trend ${wT.cls}">${wT.arrow}</div></div>`;
     html += `<div class="status-tile"><div class="status-label">אחוז שומן</div><div class="status-value">${m&&m.body_fat_pct?m.body_fat_pct:'-'}<span class="status-unit">%</span></div><div class="status-trend ${bfT.cls}">${bfT.arrow}</div></div>`;
     html += `<div class="status-tile"><div class="status-label">מסת שריר</div><div class="status-value">${m&&m.muscle_mass?m.muscle_mass:'-'}<span class="status-unit">ק"ג</span></div><div class="status-trend ${mmT.cls}">${mmT.arrow}</div></div>`;
-    html += `<div class="status-tile"><div class="status-label">BMI</div><div class="status-value">${bmi}</div></div></div></div>`;
+    const a = state.latestActivity;
+    html += `<div class="status-tile"><div class="status-label">BMI</div><div class="status-value">${bmi}</div></div>`;
+    html += `<div class="status-tile"><div class="status-label">צעדים</div><div class="status-value">${a?a.steps:'-'}</div></div>`;
+    html += `<div class="status-tile"><div class="status-label">מרחק</div><div class="status-value">${a?a.distance_km:'-'}<span class="status-unit">ק"מ</span></div></div>`;
+    html += `<div class="status-tile"><div class="status-label">קלוריות</div><div class="status-value">${a?a.calories:'-'}<span class="status-unit">קל'</span></div></div></div></div>`;
 
     html += `<div class="ai-panel"><div class="ai-persona"><div class="ai-avatar">👩‍⚕️</div><div><div class="ai-name">ד"ר נועה לבנת</div><div class="ai-role">דיאטנית קלינית</div></div></div><div class="btn-row mt-2"><button class="btn" data-action="byoc-dietitian">📋 קבל הנחיה</button><button class="btn secondary" data-action="paste-dietitian">📥 הדבק תשובה</button></div></div>`;
     html += `<div class="ai-panel"><div class="ai-persona"><div class="ai-avatar trainer">🏋️</div><div><div class="ai-name">אסף ברק</div><div class="ai-role">מאמן כושר</div></div></div><div class="btn-row mt-2"><button class="btn" data-action="byoc-trainer" style="background:var(--accent-2)">📋 קבל הנחיה</button><button class="btn secondary" data-action="paste-trainer">📥 הדבק תשובה</button></div></div>`;

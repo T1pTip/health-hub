@@ -10,7 +10,7 @@
 //   - HTML document / navigations: NETWORK-FIRST (freshest app when online, cache only offline).
 //   - Other same-origin GETs: stale-while-revalidate.
 //   - Cross-origin (Supabase API, CDNs): passed through untouched.
-const CACHE = 'hh-v1.9';
+const CACHE = 'hh-v2.2';
 
 self.addEventListener('install', (e) => {
   self.skipWaiting(); // auto-activate the new worker -> no more "waiting"/stale app

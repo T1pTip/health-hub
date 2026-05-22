@@ -485,6 +485,7 @@ main {
     <span id="appVer" style="font-size:11px;opacity:.55;font-weight:400;margin-inline-start:6px;"></span>
   </div>
   <div class="header-actions">
+    <button class="icon-btn" id="btnRefresh" title="רענן נתונים">🔄</button>
     <button class="icon-btn" id="btnHistory" title="היסטוריית הנחיות">📜</button>
     <button class="icon-btn" id="btnSettings" title="הגדרות">⚙️</button>
   </div>
@@ -560,7 +561,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.4.1';
+  const APP_VER = '2.4.2';
   try { var _vb = document.getElementById('appVer'); if (_vb) _vb.textContent = 'v' + APP_VER; } catch (_e) {}
   // Gemini vision proxy endpoint (the server holds the key). Empty = local OCR only.
   // Set after deploying the proxy, e.g. 'https://health-hub-vision-proxy.vercel.app/api/scan'.
@@ -3766,6 +3767,7 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
     if (tab) { switchScreen(tab.dataset.screen); return; }
 
     // Header buttons
+    if (e.target.closest('#btnRefresh')) { manualRefresh(); return; }
     if (e.target.closest('#btnSettings')) { showSettings(); return; }
     if (e.target.closest('#btnHistory')) { showHistory(); return; }
 
@@ -3863,6 +3865,29 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
   // ============================================================
   let _lastDataLoad = Date.now();
   let _refreshingOnReturn = false;
+  // Manual refresh (header 🔄): explicit re-pull from Supabase, bypasses the focus throttle.
+  let _manualRefreshing = false;
+  async function manualRefresh(){
+    if (_manualRefreshing) return;
+    if (!(cfg.url && cfg.key && supa)) { toast('הגדר Supabase תחילה (⚙️)'); return; }
+    _manualRefreshing = true;
+    const btn = document.getElementById('btnRefresh');
+    let anim = null;
+    if (btn && btn.animate) anim = btn.animate([{transform:'rotate(0deg)'},{transform:'rotate(360deg)'}], {duration:700, iterations: Infinity});
+    try {
+      await loadAllData();
+      _lastDataLoad = Date.now();
+      renderCurrentScreen();
+      toast('✓ עודכן');
+    } catch (e) {
+      console.warn('[HH] manual refresh failed:', e);
+      toast('שגיאה ברענון');
+    } finally {
+      _manualRefreshing = false;
+      if (anim) anim.cancel();
+    }
+  }
+
   async function refreshOnReturn(){
     if (_refreshingOnReturn) return;
     if (!(cfg.url && cfg.key && supa)) return;
