@@ -559,7 +559,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.0.0';
+  const APP_VER = '2.1.0';
 
   let supa = null;
   // Default Supabase credentials baked into the app so any device (mobile, new browser, etc.) works out-of-the-box.
@@ -981,6 +981,114 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       setStatus('⚠️ חילוץ נכשל: ' + (e.message||e) + ' — מלא ידנית או נסה דרך Claude.');
       toast('⚠️ OCR נכשל — fallback ל-Claude זמין למטה', 4000);
     }
+  }
+
+  // ============================================================
+  // PRODUCT LABEL OCR (photo of a food package -> nutrition fields)
+  // ============================================================
+  // Parse nutrition-label values (per 100g) from raw OCR text. Best-effort heuristic:
+  // for each macro keyword take the LARGEST in-range number on that line, because the
+  // per-100g column is almost always larger than the per-serving column. OCR of printed
+  // labels is imperfect, so the user reviews/corrects and a Claude fallback exists.
+  function parseFoodLabel(rawText){
+    var text = (rawText || '').replace(/[٫،]/g, '.');
+    var lines = text.split(/\n+/).map(function(l){ return l.replace(/\s+/g, ' ').trim(); }).filter(Boolean);
+    function pickLargest(keywords, min, max){
+      var best = null;
+      for (var i = 0; i < lines.length; i++){
+        var low = lines[i].toLowerCase();
+        var hit = false;
+        for (var k = 0; k < keywords.length; k++){ if (low.indexOf(keywords[k].toLowerCase()) > -1){ hit = true; break; } }
+        if (!hit) continue;
+        var nums = (lines[i].match(/\d{1,4}(?:\.\d{1,2})?/g) || []).map(parseFloat).filter(function(n){ return n >= min && n <= max; });
+        for (var j = 0; j < nums.length; j++){ if (best == null || nums[j] > best) best = nums[j]; }
+      }
+      return best;
+    }
+    var res = {};
+    var cal  = pickLargest(['אנרגיה','קלוריות','קלוריה','קק','energy','calorie','kcal'], 5, 950);
+    var prot = pickLargest(['חלבונים','חלבון','protein'], 0, 100);
+    var fat  = pickLargest(['שומנים','שומן','fat'], 0, 100);
+    var carb = pickLargest(['פחמימות','פחמימה','carbohydrate','carbs','carb'], 0, 100);
+    if (cal  != null) res.cal_per_100g     = cal;
+    if (prot != null) res.protein_per_100g = prot;
+    if (fat  != null) res.fat_per_100g     = fat;
+    if (carb != null) res.carbs_per_100g   = carb;
+    return res;
+  }
+
+  // Full product-photo pipeline: image -> OCR -> parseFoodLabel -> fill the modal fields.
+  async function runProductOCR(file){
+    var statusEl = document.getElementById('apOcrStatus');
+    var setStatus = function(msg){ if (statusEl){ statusEl.style.display = 'block'; statusEl.textContent = msg; } };
+    try { var pv = document.getElementById('apPreview'); if (pv){ pv.src = URL.createObjectURL(file); pv.style.display = 'block'; } } catch(_){}
+    try {
+      setStatus('🔍 טוען מנוע OCR (פעם ראשונה ~30מב, סבלנות)...');
+      var text = await extractTextFromImage(file, function(p){
+        if (p.status === 'recognizing text' && p.progress != null){ setStatus('🔍 מזהה טקסט... ' + Math.round(p.progress*100) + '%'); }
+        else if (p.status){ setStatus('🔍 ' + p.status + '...'); }
+      });
+      var parsed = parseFoodLabel(text);
+      var setv = function(id, v){ if (v != null){ var el = document.getElementById(id); if (el) el.value = v; } };
+      var filled = 0;
+      if (parsed.cal_per_100g     != null){ setv('apCal', parsed.cal_per_100g); filled++; }
+      if (parsed.protein_per_100g != null){ setv('apP',   parsed.protein_per_100g); filled++; }
+      if (parsed.fat_per_100g     != null){ setv('apF',   parsed.fat_per_100g); filled++; }
+      if (parsed.carbs_per_100g   != null){ setv('apC',   parsed.carbs_per_100g); filled++; }
+      var rawEl = document.getElementById('apOcrRaw');
+      if (rawEl){ rawEl.value = text; var wrap = document.getElementById('apOcrRawWrap'); if (wrap) wrap.style.display = 'block'; }
+      if (filled > 0){
+        setStatus('✅ זוהו ' + filled + '/4 ערכים — השלם שם המוצר, בדוק/תקן ולחץ שמור');
+        toast('✅ ' + filled + ' ערכים מולאו מהתווית', 3000);
+      } else {
+        setStatus('⚠️ לא זוהו ערכים מהתווית. מלא ידנית או דייק דרך Claude (למטה).');
+        toast('⚠️ OCR לא זיהה — נסה דרך Claude', 4000);
+      }
+    } catch(e){
+      console.error('Product OCR failed:', e);
+      setStatus('⚠️ חילוץ נכשל: ' + (e.message || e) + ' — מלא ידנית או נסה דרך Claude.');
+      toast('⚠️ OCR נכשל — נסה דרך Claude', 4000);
+    }
+  }
+
+  // Build + show the "add food from photo" modal. Camera/upload -> local OCR fills the
+  // nutrition fields -> user reviews -> save to the foods DB (saveCustomFood), optionally
+  // logged to today's menu. Claude vision is the accuracy fallback (copy prompt + paste JSON).
+  function renderProductModal(){
+    var keys = Object.keys(FOOD_CATEGORIES);
+    var catOpts = '';
+    for (var i = 0; i < keys.length; i++){
+      catOpts += '<option value="' + keys[i] + '"' + (keys[i] === 'sweets' ? ' selected' : '') + '>' + FOOD_CATEGORIES[keys[i]] + '</option>';
+    }
+    var h = '';
+    h += '<div class="modal-header"><h3 class="modal-title">🤖 הוסף מאכל מצילום</h3><button class="modal-close" data-action="close-modal">×</button></div>';
+    h += '<div class="text-xs text-dim mb-2">צלם או העלה תווית מוצר → OCR מקומי ימלא את הערכים. בדוק/תקן ושמור. לדיוק מלא — "נתח דרך Claude".</div>';
+    h += '<div class="form-row"><label class="form-label">📷 צילום תווית המוצר</label><div class="btn-row">';
+    h += '<label class="btn" style="margin:0;cursor:pointer">📷 צלם מוצר<input type="file" id="apPhotoCam" accept="image/*" capture="environment" style="display:none"></label>';
+    h += '<label class="btn secondary" style="margin:0;cursor:pointer">🖼️ העלה תמונה<input type="file" id="apPhotoLib" accept="image/*" style="display:none"></label>';
+    h += '</div></div>';
+    h += '<div id="apOcrStatus" class="text-xs" style="display:none;background:var(--bg-card-2);padding:8px 10px;border-radius:8px;margin-bottom:10px;line-height:1.5"></div>';
+    h += '<img id="apPreview" class="photo-preview" style="display:none" alt="תצוגה מקדימה">';
+    h += '<div id="apOcrRawWrap" style="display:none;margin-bottom:10px"><details><summary style="cursor:pointer;color:var(--accent-2);font-size:12px">📝 טקסט שחולץ (לבדיקה)</summary><textarea id="apOcrRaw" rows="4" readonly style="font-size:11px;font-family:monospace;margin-top:6px"></textarea></details></div>';
+    h += '<div class="text-xs text-dim mb-2">↓ בדוק/תקן את הערכים (ל-100 גרם):</div>';
+    h += '<div class="form-row"><label class="form-label">שם המוצר *</label><input type="text" id="apName" placeholder="לדוגמה: ביסלי בצל"></div>';
+    h += '<div class="form-row"><label class="form-label">קטגוריה</label><select id="apCat">' + catOpts + '</select></div>';
+    h += '<div class="form-row"><label class="form-label">קלוריות / 100g *</label><input type="number" id="apCal" step="1"></div>';
+    h += '<div class="form-row"><label class="form-label">חלבון (g) / 100g</label><input type="number" id="apP" step="0.1"></div>';
+    h += '<div class="form-row"><label class="form-label">שומן (g) / 100g</label><input type="number" id="apF" step="0.1"></div>';
+    h += '<div class="form-row"><label class="form-label">פחמימות (g) / 100g</label><input type="number" id="apC" step="0.1"></div>';
+    h += '<div class="form-row"><label class="form-label">כמות נצרכת (גרם, אופציונלי)</label><input type="number" id="apGrams" placeholder="30" min="0" max="1000" step="1"></div>';
+    h += '<div class="form-row"><label class="form-label">ארוחה (לתפריט היום)</label><select id="apMeal"><option value="">— שמור ל-DB בלבד —</option><option value="breakfast">🌅 בוקר</option><option value="lunch">🍽️ צהריים</option><option value="dinner">🌙 ערב</option><option value="snack" selected>🍿 נשנוש</option></select></div>';
+    h += '<details class="mt-2"><summary style="cursor:pointer;color:var(--accent-2);font-size:13px">🤖 דיוק מלא דרך Claude (גיבוי)</summary>';
+    h += '<div class="hint-box text-xs mt-2">1️⃣ "העתק prompt" → 2️⃣ "פתח Claude" → הדבק + העלה צילום האריזה → 3️⃣ העתק את ה-JSON לכאן → "מלא שדות"</div>';
+    h += '<div class="btn-row"><button class="btn" style="font-size:13px" data-action="copy-product-prompt">📋 העתק prompt</button><button class="btn" style="font-size:13px;background:var(--accent-2)" data-action="open-claude">🔗 פתח Claude</button></div>';
+    h += '<textarea id="apResponse" rows="4" placeholder=\'{"name_he":"...","cal_per_100g":...}\' style="font-size:12px;margin-top:8px"></textarea>';
+    h += '<button class="btn secondary" style="font-size:13px;margin-top:6px" data-action="fill-product-from-json">⬇️ מלא שדות מ-JSON</button>';
+    h += '</details>';
+    h += '<div class="btn-row mt-3"><button class="btn" data-action="save-product">💾 שמור למאגר</button><button class="btn secondary" data-action="close-modal">סגור</button></div>';
+    showModal(h);
+    var fn = document.getElementById('apName');
+    if (fn) setTimeout(function(){ fn.focus(); }, 100);
   }
 
   function formatDate(d){
@@ -2868,93 +2976,66 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
       return;
     }
 
-    // ==================== ANALYZE PRODUCT (Photo → AI) ====================
+    // ==================== ADD FOOD FROM PHOTO (camera/upload -> local OCR -> DB) ====================
     if (action === 'analyze-product'){
-      const html = `<div class="modal-header">
-        <h3 class="modal-title">🤖 ניתוח מוצר מצילום</h3>
-        <button class="modal-close" data-action="close-modal">×</button>
-      </div>
-      <div class="text-xs text-dim mb-2">העלה צילום של תווית מוצר ל-Claude.ai וקבל ניתוח תזונתי אוטומטי</div>
-
-      <div class="form-row"><label class="form-label">שם המוצר (אופציונלי)</label>
-        <input type="text" id="apName" placeholder="לדוגמה: ביסלי בצל - Claude יזהה גם בלי"></div>
-      <div class="form-row"><label class="form-label">כמות נצרכת (גרמים)</label>
-        <input type="number" id="apGrams" placeholder="30" min="0" max="1000" step="1"></div>
-      <div class="form-row"><label class="form-label">ארוחה (לתפריט היום)</label>
-        <select id="apMeal">
-          <option value="">— שמור ל-DB בלבד, לא הוסף ליום —</option>
-          <option value="breakfast">🌅 בוקר</option>
-          <option value="lunch">🍽️ צהריים</option>
-          <option value="dinner">🌙 ערב</option>
-          <option value="snack" selected>🍿 נשנוש</option>
-        </select>
-      </div>
-
-      <div class="hint-box text-xs">
-        <strong>📋 שלב 1:</strong> לחץ "פתח Claude" → ה-prompt יועתק לזיכרון<br>
-        <strong>📷 שלב 2:</strong> ב-Claude.ai הדבק (Ctrl+V) + העלה צילום של האריזה<br>
-        <strong>📥 שלב 3:</strong> העתק את ה-JSON שתקבל וחזור לכאן
-      </div>
-
-      <div class="btn-row mt-2">
-        <button class="btn" data-action="byoc-product" style="background:var(--accent-2)">📋 פתח Claude לניתוח</button>
-      </div>
-
-      <div class="text-xs text-dim mt-3 mb-2">📥 הדבק את ה-JSON של Claude כאן:</div>
-      <textarea id="apResponse" rows="8" placeholder='{"name_he":"...", "cal_per_100g":...}'></textarea>
-
-      <div class="btn-row mt-3">
-        <button class="btn" data-action="paste-product">💾 שמור</button>
-        <button class="btn secondary" data-action="close-modal">סגור</button>
-      </div>`;
-      showModal(html);
-      setTimeout(()=>$('#apName')?.focus(), 100);
+      renderProductModal();
       return;
     }
-    if (action === 'paste-product'){
-      const text = $('#apResponse')?.value?.trim();
-      if (!text){ toast('הדבק קודם את ה-JSON של Claude'); return; }
+    if (action === 'copy-product-prompt'){
+      const ok = await copyToClipboard(buildProductPrompt());
+      toast(ok ? '✅ הפרומפט הועתק! פתח Claude, הדבק והעלה צילום של האריזה' : '⚠️ העתקה נכשלה - נסה שוב', 3500);
+      return;
+    }
+    if (action === 'fill-product-from-json'){
+      const elR = document.getElementById('apResponse');
+      const text = elR && elR.value ? elR.value.trim() : '';
+      if (!text){ toast('הדבק קודם JSON מ-Claude'); return; }
+      const a = text.indexOf('{');
+      const b = text.lastIndexOf('}');
+      if (a < 0 || b < 0 || b < a){ toast('לא נמצא JSON תקין'); return; }
       let json;
-      try {
-        // Extract first {...} block, handles markdown code fences
-        const match = text.match(/\{[\s\S]*\}/);
-        if (!match) throw new Error('לא נמצא JSON');
-        json = JSON.parse(match[0]);
-      } catch(e){
-        toast('שגיאת JSON: '+e.message);
-        return;
-      }
-      if (!json.name_he || json.cal_per_100g == null){
-        toast('JSON חסר name_he או cal_per_100g');
-        return;
-      }
+      try { json = JSON.parse(text.slice(a, b + 1)); }
+      catch(e){ toast('שגיאת JSON: ' + e.message); return; }
+      const setv = function(id, v){ if (v != null){ const el = document.getElementById(id); if (el) el.value = v; } };
+      if (json.name_he != null) setv('apName', String(json.name_he));
+      if (json.category != null){ const c = document.getElementById('apCat'); if (c) c.value = json.category; }
+      setv('apCal', json.cal_per_100g);
+      setv('apP', json.protein_per_100g);
+      setv('apF', json.fat_per_100g);
+      setv('apC', json.carbs_per_100g);
+      toast('✅ השדות מולאו - בדוק/תקן ולחץ שמור', 3500);
+      return;
+    }
+    if (action === 'save-product' || action === 'paste-product'){
+      const gv = function(id){ const el = document.getElementById(id); return el ? String(el.value).trim() : ''; };
+      const name = gv('apName');
+      const calRaw = gv('apCal');
+      const cal = parseFloat(calRaw);
+      if (!name){ toast('שם המוצר חובה'); return; }
+      if (calRaw === '' || isNaN(cal)){ toast('קלוריות הן שדה חובה'); return; }
+      const catEl = document.getElementById('apCat');
       const food = {
-        name_he: String(json.name_he),
-        category: json.category || 'sweets',
-        cal_per_100g:     parseFloat(json.cal_per_100g) || 0,
-        protein_per_100g: parseFloat(json.protein_per_100g) || 0,
-        fat_per_100g:     parseFloat(json.fat_per_100g) || 0,
-        carbs_per_100g:   parseFloat(json.carbs_per_100g) || 0,
+        name_he: name,
+        category: catEl ? catEl.value : 'sweets',
+        cal_per_100g: cal,
+        protein_per_100g: parseFloat(gv('apP')) || 0,
+        fat_per_100g: parseFloat(gv('apF')) || 0,
+        carbs_per_100g: parseFloat(gv('apC')) || 0,
       };
-      await saveCustomFood(food);
-
-      // Optionally add to today's daily menu
-      const grams = parseFloat($('#apGrams')?.value);
-      const meal  = $('#apMeal')?.value;
+      const ok = await saveCustomFood(food);
+      if (!ok){ return; }
+      const grams = parseFloat(gv('apGrams'));
+      const mealEl = document.getElementById('apMeal');
+      const meal = mealEl ? mealEl.value : '';
       if (grams > 0 && meal){
         const today = new Date().toISOString().slice(0,10);
         const existing = state.dailyMenus[today] || { items: [] };
-        const items = [...(existing.items || [])];
-        items.push({
-          food_id: food.id || null,
-          food_name: food.name_he,
-          grams: grams,
-          meal: meal,
-        });
+        const items = (existing.items || []).slice();
+        items.push({ food_id: food.id || null, food_name: food.name_he, grams: grams, meal: meal });
         await saveDailyMenu(today, items, existing.notes || null);
-        toast(`✅ ${food.name_he} נשמר + הוסף ${grams}g ליום היום`);
+        toast('✅ ' + food.name_he + ' נשמר + הוסף ' + grams + 'g ליום היום', 3500);
       } else {
-        toast(`✅ ${food.name_he} נשמר במאגר`);
+        toast('✅ ' + food.name_he + ' נשמר במאגר', 3000);
       }
       closeModal();
       renderCurrentScreen();
@@ -3478,14 +3559,16 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
     if (e.target.closest('[data-action="save-settings"]')) saveSettings();
   });
 
-  // Auto-OCR when a scale screenshot is selected in the new-metric modal
+  // Auto-OCR on image select: scale screenshot (metricPhoto) -> runMetricOCR;
+  // product label via camera (apPhotoCam) or gallery (apPhotoLib) -> runProductOCR.
   document.addEventListener('change', (e) => {
-    if (e.target && e.target.id === 'metricPhoto'){
-      const file = e.target.files && e.target.files[0];
-      if (file && file.type && file.type.indexOf('image/') === 0){
-        runMetricOCR(file);
-      }
-    }
+    if (!e.target) return;
+    const id = e.target.id;
+    if (id !== 'metricPhoto' && id !== 'apPhotoCam' && id !== 'apPhotoLib') return;
+    const file = e.target.files && e.target.files[0];
+    if (!(file && file.type && file.type.indexOf('image/') === 0)) return;
+    if (id === 'metricPhoto') runMetricOCR(file);
+    else runProductOCR(file);
   });
 
   // ============================================================
