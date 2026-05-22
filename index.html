@@ -560,12 +560,12 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.3.0';
+  const APP_VER = '2.3.1';
   try { var _vb = document.getElementById('appVer'); if (_vb) _vb.textContent = 'v' + APP_VER; } catch (_e) {}
   // Gemini vision proxy endpoint (the server holds the key). Empty = local OCR only.
   // Set after deploying the proxy, e.g. 'https://health-hub-vision-proxy.vercel.app/api/scan'.
   // localStorage 'hh_vision_proxy' overrides this (handy for testing before hardcoding).
-  const VISION_PROXY_URL = '';
+  const VISION_PROXY_URL = 'https://health-hub-proxy.vercel.app/api/scan';
 
   let supa = null;
   // Default Supabase credentials baked into the app so any device (mobile, new browser, etc.) works out-of-the-box.
