@@ -559,7 +559,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.1.0';
+  const APP_VER = '2.2.0';
 
   let supa = null;
   // Default Supabase credentials baked into the app so any device (mobile, new browser, etc.) works out-of-the-box.
@@ -986,30 +986,109 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   // PRODUCT LABEL OCR (photo of a food package -> nutrition fields)
   // ============================================================
-  // Parse nutrition-label values (per 100g) from raw OCR text. Best-effort heuristic:
-  // for each macro keyword take the LARGEST in-range number on that line, because the
-  // per-100g column is almost always larger than the per-serving column. OCR of printed
-  // labels is imperfect, so the user reviews/corrects and a Claude fallback exists.
+  // Upscale + grayscale + mild contrast before OCR -> sharper recognition of small printed
+  // table text. Returns a canvas (Tesseract accepts it); on any failure resolves the raw file.
+  function prepImageForOCR(file){
+    return new Promise(function(resolve){
+      try {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function(){
+          try {
+            var nw = img.naturalWidth || 0;
+            var scale = 1;
+            if (nw > 0 && nw < 1000) scale = Math.min(2, 2000 / nw);
+            else if (nw > 2200) scale = 2200 / nw;
+            var w = Math.round((nw || 1) * scale);
+            var hh = Math.round((img.naturalHeight || 1) * scale);
+            if (w < 1 || hh < 1){ URL.revokeObjectURL(url); resolve(file); return; }
+            var cv = document.createElement('canvas');
+            cv.width = w; cv.height = hh;
+            var ctx = cv.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, hh);
+            try {
+              var id = ctx.getImageData(0, 0, w, hh);
+              var d = id.data;
+              for (var i = 0; i < d.length; i += 4){
+                var g = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+                g = (g - 128) * 1.35 + 128;
+                if (g < 0) g = 0;
+                if (g > 255) g = 255;
+                d[i] = d[i+1] = d[i+2] = g;
+              }
+              ctx.putImageData(id, 0, 0);
+            } catch(_){}
+            URL.revokeObjectURL(url);
+            resolve(cv);
+          } catch(e){ try { URL.revokeObjectURL(url); } catch(_){} resolve(file); }
+        };
+        img.onerror = function(){ try { URL.revokeObjectURL(url); } catch(_){} resolve(file); };
+        img.src = url;
+      } catch(e){ resolve(file); }
+    });
+  }
+
+  // Parse nutrition-label values (per 100g) from OCR text. Table-aware, modeled on the scale
+  // parser: numbers are tokenized with their column position + unit, each macro's label line
+  // is located, and the value is read from the per-100g column (same / adjacent lines).
+  // Handles 2-column tables (100g vs serving), kcal-vs-kJ, %DV columns, decimal commas, and
+  // sub-rows (saturated fat / sugars). OCR is imperfect -> user reviews + Claude fallback.
   function parseFoodLabel(rawText){
     var text = (rawText || '').replace(/[٫،]/g, '.');
+    text = text.replace(/(\d),(\d{1,2})(?!\d)/g, function(m0, a, b){ return a + '.' + b; });
     var lines = text.split(/\n+/).map(function(l){ return l.replace(/\s+/g, ' ').trim(); }).filter(Boolean);
-    function pickLargest(keywords, min, max){
-      var best = null;
+    function numTokens(line){
+      var toks = [];
+      var re = /(\d{1,4}(?:\.\d{1,2})?)\s*(kcal|kj|mg|g|%)?/gi;
+      var m;
+      while ((m = re.exec(line)) !== null){
+        if (!m[1]){ re.lastIndex++; continue; }
+        var v = parseFloat(m[1]);
+        if (isNaN(v)) continue;
+        toks.push({ val: v, center: m.index + m[0].length / 2, unit: (m[2] || '').toLowerCase() });
+      }
+      return toks;
+    }
+    // Determine which value column is per-100g from a header row listing two columns (e.g.
+    // "ל-100 גרם" + "ל-30 גרם"): ordinal = position of the 100 value among the header numbers.
+    // If the header has only the 100 column (or none), ordinal stays -1 and we take the largest
+    // in-range value on the row (per-100g is usually the larger of 100g vs serving).
+    var ordinal = -1;
+    for (var hI = 0; hI < lines.length; hI++){
+      var lh = lines[hI].toLowerCase();
+      if (lh.indexOf('100') < 0) continue;
+      if (lh.indexOf('גרם') < 0 && lh.indexOf('100g') < 0 && lh.indexOf('100 g') < 0 && lh.indexOf('ml') < 0 && lh.indexOf('מ\"ל') < 0 && lh.indexOf('מל') < 0) continue;
+      var ht = numTokens(lines[hI]);
+      if (ht.length >= 2){ for (var hj = 0; hj < ht.length; hj++){ if (ht[hj].val === 100){ ordinal = hj; break; } } }
+      break;
+    }
+    function scan(keywords, o, strict){
       for (var i = 0; i < lines.length; i++){
         var low = lines[i].toLowerCase();
         var hit = false;
         for (var k = 0; k < keywords.length; k++){ if (low.indexOf(keywords[k].toLowerCase()) > -1){ hit = true; break; } }
         if (!hit) continue;
-        var nums = (lines[i].match(/\d{1,4}(?:\.\d{1,2})?/g) || []).map(parseFloat).filter(function(n){ return n >= min && n <= max; });
-        for (var j = 0; j < nums.length; j++){ if (best == null || nums[j] > best) best = nums[j]; }
+        if (strict && o.avoid){ var bad = false; for (var av = 0; av < o.avoid.length; av++){ if (low.indexOf(o.avoid[av].toLowerCase()) > -1){ bad = true; break; } } if (bad) continue; }
+        var ts = numTokens(lines[i]).filter(function(x){
+          if (x.unit === '%') return false;
+          if (o.noKj && x.unit === 'kj') return false;
+          return x.val >= o.min && x.val <= o.max;
+        });
+        if (!ts.length) continue;
+        if (o.preferKcal){ var kc = ts.filter(function(x){ return x.unit === 'kcal'; }); if (kc.length) ts = kc; }
+        if (ordinal >= 0 && ts.length > ordinal) return ts[ordinal].val;
+        var best = ts[0].val;
+        for (var b2 = 1; b2 < ts.length; b2++){ if (ts[b2].val > best) best = ts[b2].val; }
+        return best;
       }
-      return best;
+      return null;
     }
+    function valueFor(keywords, o){ var v = scan(keywords, o, true); if (v == null) v = scan(keywords, o, false); return v; }
     var res = {};
-    var cal  = pickLargest(['אנרגיה','קלוריות','קלוריה','קק','energy','calorie','kcal'], 5, 950);
-    var prot = pickLargest(['חלבונים','חלבון','protein'], 0, 100);
-    var fat  = pickLargest(['שומנים','שומן','fat'], 0, 100);
-    var carb = pickLargest(['פחמימות','פחמימה','carbohydrate','carbs','carb'], 0, 100);
+    var cal  = valueFor(['קלוריות','אנרגיה','קלוריה','קק','energy','calorie','kcal'], {min:5, max:950, noKj:true, preferKcal:true});
+    var prot = valueFor(['חלבונים','חלבון','protein'], {min:0, max:100});
+    var fat  = valueFor(['שומנים','שומן','fat'], {min:0, max:100, avoid:['רווי','טראנס','trans','satur']});
+    var carb = valueFor(['פחמימות','פחמימה','carbohydrate','carbs','carb'], {min:0, max:100, avoid:['סוכר','מהן','מתוכם','sugar']});
     if (cal  != null) res.cal_per_100g     = cal;
     if (prot != null) res.protein_per_100g = prot;
     if (fat  != null) res.fat_per_100g     = fat;
@@ -1024,7 +1103,9 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     try { var pv = document.getElementById('apPreview'); if (pv){ pv.src = URL.createObjectURL(file); pv.style.display = 'block'; } } catch(_){}
     try {
       setStatus('🔍 טוען מנוע OCR (פעם ראשונה ~30מב, סבלנות)...');
-      var text = await extractTextFromImage(file, function(p){
+      var ocrSrc = file;
+      try { ocrSrc = await prepImageForOCR(file); } catch(_){ ocrSrc = file; }
+      var text = await extractTextFromImage(ocrSrc, function(p){
         if (p.status === 'recognizing text' && p.progress != null){ setStatus('🔍 מזהה טקסט... ' + Math.round(p.progress*100) + '%'); }
         else if (p.status){ setStatus('🔍 ' + p.status + '...'); }
       });
