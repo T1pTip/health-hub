@@ -560,8 +560,12 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.2.2';
+  const APP_VER = '2.3.0';
   try { var _vb = document.getElementById('appVer'); if (_vb) _vb.textContent = 'v' + APP_VER; } catch (_e) {}
+  // Gemini vision proxy endpoint (the server holds the key). Empty = local OCR only.
+  // Set after deploying the proxy, e.g. 'https://health-hub-vision-proxy.vercel.app/api/scan'.
+  // localStorage 'hh_vision_proxy' overrides this (handy for testing before hardcoding).
+  const VISION_PROXY_URL = '';
 
   let supa = null;
   // Default Supabase credentials baked into the app so any device (mobile, new browser, etc.) works out-of-the-box.
@@ -1098,13 +1102,93 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
     return res;
   }
 
-  // Full product-photo pipeline: image -> OCR -> parseFoodLabel -> fill the modal fields.
+  // Downscale + JPEG-encode an image file to a data URL (keeps color for vision; small payload).
+  function fileToScaledDataURL(file, maxDim, quality){
+    return new Promise(function(resolve){
+      try {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function(){
+          try {
+            var w = img.naturalWidth || 0, h = img.naturalHeight || 0;
+            if (!w || !h){ URL.revokeObjectURL(url); resolve(null); return; }
+            var md = maxDim || 1280;
+            var sc = Math.min(1, md / Math.max(w, h));
+            var nw = Math.max(1, Math.round(w * sc)), nh = Math.max(1, Math.round(h * sc));
+            var cv = document.createElement('canvas'); cv.width = nw; cv.height = nh;
+            cv.getContext('2d').drawImage(img, 0, 0, nw, nh);
+            URL.revokeObjectURL(url);
+            resolve(cv.toDataURL('image/jpeg', quality || 0.8));
+          } catch(e){ try { URL.revokeObjectURL(url); } catch(_){} resolve(null); }
+        };
+        img.onerror = function(){ try { URL.revokeObjectURL(url); } catch(_){} resolve(null); };
+        img.src = url;
+      } catch(e){ resolve(null); }
+    });
+  }
+
+  // Observability: track scans + tokens per month in localStorage.
+  function trackScanUsage(usage){
+    try {
+      var ym = new Date().toISOString().slice(0,7);
+      var all = JSON.parse(localStorage.getItem('hh_scan_usage') || '{}');
+      var rec = all[ym] || { scans:0, tokens:0 };
+      rec.scans += 1;
+      if (usage && usage.total) rec.tokens += usage.total;
+      all[ym] = rec;
+      localStorage.setItem('hh_scan_usage', JSON.stringify(all));
+    } catch(_){}
+  }
+
+  // Smart vision scan via the Gemini proxy. Returns the parsed result object, or throws.
+  async function scanViaProxy(file){
+    var proxy = (VISION_PROXY_URL || localStorage.getItem('hh_vision_proxy') || '').trim();
+    if (!proxy) throw new Error('no-proxy');
+    var dataUrl = await fileToScaledDataURL(file, 1280, 0.8);
+    if (!dataUrl) throw new Error('image-encode-failed');
+    var resp = await fetch(proxy, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl, mime: 'image/jpeg' })
+    });
+    var j = await resp.json().catch(function(){ return {}; });
+    if (!resp.ok || !j.ok) throw new Error((j && (j.detail || j.error)) || ('HTTP ' + resp.status));
+    if (j.usage) trackScanUsage(j.usage);
+    return j.result;
+  }
+
+  // Full product-photo pipeline: try the Gemini vision proxy first (reads curved/angled/cluttered
+  // labels reliably); fall back to local Tesseract OCR if no proxy is configured or the call fails.
   async function runProductOCR(file){
     var statusEl = document.getElementById('apOcrStatus');
     var setStatus = function(msg){ if (statusEl){ statusEl.style.display = 'block'; statusEl.textContent = msg; } };
     try { var pv = document.getElementById('apPreview'); if (pv){ pv.src = URL.createObjectURL(file); pv.style.display = 'block'; } } catch(_){}
+
+    var hasProxy = !!(VISION_PROXY_URL || localStorage.getItem('hh_vision_proxy') || '').trim();
+    if (hasProxy){
+      try {
+        setStatus('🤖 שולח לזיהוי חכם (Gemini)...');
+        var r = await scanViaProxy(file);
+        var any = r && r.found !== false && (r.cal_per_100g != null || r.protein_per_100g != null || r.fat_per_100g != null || r.carbs_per_100g != null);
+        if (any){
+          var setv = function(id, v){ if (v != null && v !== ''){ var el = document.getElementById(id); if (el) el.value = v; } };
+          if (r.name_he){ var nel = document.getElementById('apName'); if (nel && !nel.value) nel.value = r.name_he; }
+          if (r.category){ var cs = document.getElementById('apCat'); if (cs){ for (var oi=0; oi<cs.options.length; oi++){ if (cs.options[oi].value === r.category){ cs.value = r.category; break; } } } }
+          setv('apCal', r.cal_per_100g); setv('apP', r.protein_per_100g); setv('apF', r.fat_per_100g); setv('apC', r.carbs_per_100g);
+          var basisNote = (r.basis === '100ml') ? ' (ל-100 מל)' : '';
+          setStatus('✅ זוהה אוטומטית' + basisNote + ' — בדוק/תקן ולחץ שמור');
+          toast('✅ זוהה דרך Gemini', 2600);
+          return;
+        }
+        setStatus('⚠️ הזיהוי החכם לא מצא טבלה — מנסה OCR מקומי...');
+      } catch(e){
+        console.warn('vision proxy failed:', e);
+        setStatus('⚠️ זיהוי חכם נכשל — מנסה OCR מקומי...');
+      }
+    }
+
     try {
-      setStatus('🔍 טוען מנוע OCR (פעם ראשונה ~30מב, סבלנות)...');
+      setStatus('🔍 טוען מנוע OCR מקומי (פעם ראשונה ~30מב)...');
       var ocrSrc = file;
       try { ocrSrc = await prepImageForOCR(file); } catch(_){ ocrSrc = file; }
       var text = await extractTextFromImage(ocrSrc, function(p){
@@ -1112,20 +1196,20 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
         else if (p.status){ setStatus('🔍 ' + p.status + '...'); }
       });
       var parsed = parseFoodLabel(text);
-      var setv = function(id, v){ if (v != null){ var el = document.getElementById(id); if (el) el.value = v; } };
+      var setv2 = function(id, v){ if (v != null){ var el = document.getElementById(id); if (el) el.value = v; } };
       var filled = 0;
-      if (parsed.cal_per_100g     != null){ setv('apCal', parsed.cal_per_100g); filled++; }
-      if (parsed.protein_per_100g != null){ setv('apP',   parsed.protein_per_100g); filled++; }
-      if (parsed.fat_per_100g     != null){ setv('apF',   parsed.fat_per_100g); filled++; }
-      if (parsed.carbs_per_100g   != null){ setv('apC',   parsed.carbs_per_100g); filled++; }
+      if (parsed.cal_per_100g     != null){ setv2('apCal', parsed.cal_per_100g); filled++; }
+      if (parsed.protein_per_100g != null){ setv2('apP',   parsed.protein_per_100g); filled++; }
+      if (parsed.fat_per_100g     != null){ setv2('apF',   parsed.fat_per_100g); filled++; }
+      if (parsed.carbs_per_100g   != null){ setv2('apC',   parsed.carbs_per_100g); filled++; }
       var rawEl = document.getElementById('apOcrRaw');
       if (rawEl){ rawEl.value = text; var wrap = document.getElementById('apOcrRawWrap'); if (wrap) wrap.style.display = 'block'; }
       if (filled > 0){
-        setStatus('✅ זוהו ' + filled + '/4 ערכים — השלם שם המוצר, בדוק/תקן ולחץ שמור');
-        toast('✅ ' + filled + ' ערכים מולאו מהתווית', 3000);
+        setStatus('✅ זוהו ' + filled + '/4 ערכים (OCR מקומי) — השלם שם, בדוק/תקן ולחץ שמור');
+        toast('✅ ' + filled + ' ערכים מולאו', 3000);
       } else {
-        setStatus('⚠️ לא זוהו ערכים מהתווית. מלא ידנית או דייק דרך Claude (למטה).');
-        toast('⚠️ OCR לא זיהה — נסה דרך Claude', 4000);
+        setStatus('⚠️ לא זוהו ערכים. מלא ידנית או דייק דרך Claude (למטה).');
+        toast('⚠️ לא זוהה — נסה דרך Claude', 4000);
       }
     } catch(e){
       console.error('Product OCR failed:', e);
