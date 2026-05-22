@@ -560,7 +560,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.2.1';
+  const APP_VER = '2.2.2';
   try { var _vb = document.getElementById('appVer'); if (_vb) _vb.textContent = 'v' + APP_VER; } catch (_e) {}
 
   let supa = null;
@@ -3658,15 +3658,25 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
   // PWA: Service Worker registration (real same-origin file)
   // ============================================================
   function installPWA(){
-    // Manifest + icons are real files linked statically in <head>.
-    // The service worker MUST be a real same-origin file: Chromium REJECTS blob: URL SW
-    // scripts (silent failure), which is why the install option never appeared. sw.js sits
-    // at the repo root => served at /health-hub/sw.js with scope /health-hub/.
-    if ('serviceWorker' in navigator){
-      navigator.serviceWorker.register('sw.js')
-        .then(reg => console.log('[HH] SW registered, scope:', reg.scope))
-        .catch(err => console.warn('[HH] SW registration failed:', err));
-    }
+    // Manifest + icons are real files linked statically in <head>. The service worker MUST be a
+    // real same-origin file (Chromium rejects blob: URL SW). sw.js is served at /health-hub/sw.js.
+    // AUTO-UPDATE: register with updateViaCache:'none' so the SW script is never served from the
+    // HTTP cache, poll for updates, and reload once when a NEW worker takes control (skipWaiting +
+    // clients.claim -> controllerchange) so a stale install can never get stuck on an old version.
+    if (!('serviceWorker' in navigator)) return;
+    var hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+      .then(function(reg){
+        try { reg.update(); } catch (e) {}
+        setInterval(function(){ try { reg.update(); } catch (e) {} }, 60000);
+      })
+      .catch(function(err){ console.warn('[HH] SW registration failed:', err); });
+    navigator.serviceWorker.addEventListener('controllerchange', function(){
+      if (!hadController) return;
+      if (window.__hhReloaded) return;
+      window.__hhReloaded = true;
+      window.location.reload();
+    });
   }
 
   // ============================================================
