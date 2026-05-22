@@ -482,6 +482,7 @@ main {
   <div class="app-title">
     <span class="logo">💪</span>
     <span>Health Hub</span>
+    <span id="appVer" style="font-size:11px;opacity:.55;font-weight:400;margin-inline-start:6px;"></span>
   </div>
   <div class="header-actions">
     <button class="icon-btn" id="btnHistory" title="היסטוריית הנחיות">📜</button>
@@ -559,7 +560,8 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.2.0';
+  const APP_VER = '2.2.1';
+  try { var _vb = document.getElementById('appVer'); if (_vb) _vb.textContent = 'v' + APP_VER; } catch (_e) {}
 
   let supa = null;
   // Default Supabase credentials baked into the app so any device (mobile, new browser, etc.) works out-of-the-box.
