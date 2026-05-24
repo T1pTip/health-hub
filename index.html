@@ -561,7 +561,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
   // ============================================================
   const LS_KEY_CFG = 'hh_supabase_cfg';
   const LS_KEY_CACHE = 'hh_cache_v2';
-  const APP_VER = '2.4.2';
+  const APP_VER = '2.5.0';
   try { var _vb = document.getElementById('appVer'); if (_vb) _vb.textContent = 'v' + APP_VER; } catch (_e) {}
   // Gemini vision proxy endpoint (the server holds the key). Empty = local OCR only.
   // Set after deploying the proxy, e.g. 'https://health-hub-vision-proxy.vercel.app/api/scan'.
@@ -1365,8 +1365,9 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
       state.healthDaily = {};
       (health || []).forEach(r => { state.healthDaily[r.day] = r; });
 
-      // Workout overrides come from user_profile.workout_overrides JSON column,
-      // but we keep them in localStorage for now (no schema change required).
+      // Workout plan (per weekday) - synced via Supabase workout_days table.
+      const { data: wdays } = await supa.from('workout_days').select('*');
+      (wdays || []).forEach(r => { state.workoutOverrides[r.day] = { exercises: r.exercises || [], is_release: r.is_release, time: r.time }; });
 
       // Cache to localStorage for offline use
       saveLocalCache();
@@ -1607,15 +1608,28 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
   // Get workouts (override or default)
   function getWorkoutForDay(dayName){
-    if (state.workoutOverrides[dayName]) return { custom: true, day: dayName, exercises: state.workoutOverrides[dayName] };
+    const o = state.workoutOverrides[dayName];
+    if (o) {
+      const ex = Array.isArray(o) ? o : (o.exercises || []);
+      const isRel = Array.isArray(o) ? false : !!o.is_release;
+      const tm = Array.isArray(o) ? '' : (o.time || '');
+      return { custom: true, day: dayName, exercises: ex, is_release: isRel, time: tm };
+    }
     const def = DEFAULT_WORKOUTS.find(w => w.day === dayName);
     return def ? { custom: false, ...def } : null;
   }
 
   function saveWorkoutOverride(dayName, exercises){
-    state.workoutOverrides[dayName] = exercises;
+    const prev = state.workoutOverrides[dayName];
+    const def = DEFAULT_WORKOUTS.find(w => w.day === dayName);
+    const prevObj = (prev && !Array.isArray(prev)) ? prev : null;
+    const is_release = prevObj && prevObj.is_release != null ? prevObj.is_release : (def ? def.is_release : false);
+    const time = prevObj && prevObj.time != null ? prevObj.time : (def ? def.time : null);
+    state.workoutOverrides[dayName] = { exercises: exercises, is_release: is_release, time: time };
     saveLocalCache();
-    // Future: save to DB. For now localStorage is enough since DEFAULT_WORKOUTS lives in code.
+    if (supa) {
+      supa.from('workout_days').upsert({ day: dayName, exercises: exercises, is_release: is_release, time: time, updated_at: new Date().toISOString() }, { onConflict: 'day' }).then(function(res){ if (res && res.error) console.warn('[HH] workout save failed:', res.error.message); });
+    }
     return true;
   }
 
@@ -3369,6 +3383,7 @@ ${ctx.recent_7_days_menu.slice(-3).map(d => d.custom ? `${d.date}: ${d.cal} קל
       if (!confirm(`לאפס את אימון ${s.dayName} לברירת המחדל?`)) return;
       delete state.workoutOverrides[s.dayName];
       saveLocalCache();
+      if (supa) { supa.from('workout_days').delete().eq('day', s.dayName).then(function(res){ if (res && res.error) console.warn('[HH] workout reset failed:', res.error.message); }); }
       toast('🔄 אופס לברירת מחדל');
       sessionStorage.removeItem('hh_edit_workout');
       closeModal();
